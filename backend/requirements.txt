@@ -1,3 +1,8 @@
 flask>=2.0.0
 flask-cors>=3.0.0
 pymongo>=4.0.0
+schedule>=1.2.0
+
+# RAG dependencies for "Find For Me" feature
+sentence-transformers>=5.0.0
+chromadb>=1.0.0

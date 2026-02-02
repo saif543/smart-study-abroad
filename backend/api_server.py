@@ -11,6 +11,19 @@ from mongodb_handler import MongoDBHandler
 import subprocess
 import json
 
+# RAG imports for "Find For Me" feature
+from rag.matcher import UniversityMatcher
+
+# Initialize RAG matcher globally (loads model once at startup)
+print("Loading RAG matcher... (this may take a moment on first run)")
+rag_matcher = None
+try:
+    rag_matcher = UniversityMatcher()
+    print("RAG matcher loaded successfully!")
+except Exception as e:
+    print(f"Warning: RAG matcher failed to load: {e}")
+    print("Find For Me feature will use Claude CLI fallback")
+
 app = Flask(__name__)
 CORS(app)
 
@@ -23,7 +36,15 @@ def get_db():
 
 @app.route('/api/search', methods=['POST'])
 def search():
-    """Search for university data - cache first, then AI"""
+    """Search for university data - cache first, then AI
+
+    Returns format expected by frontend:
+    - source: 'cache' or 'claude' or 'error'
+    - data: dict of all 7 data points
+    - descriptive: detailed explanation text
+    - data_year: year of the data
+    - official_name: official university name
+    """
     try:
         data = request.json
         university = data.get('university', '')
@@ -38,7 +59,27 @@ def search():
         result = extractor.search_and_store(university, degree, field, question)
         extractor.close()
 
-        return jsonify(result)
+        # Transform response to match frontend expectations
+        response = {
+            'source': result.get('source', 'error'),
+            'data': result.get('all_data', {}),  # All 7 data points
+            'descriptive': result.get('full_response', ''),  # Detailed explanation
+            'data_year': result.get('data_year'),
+            'official_name': result.get('official_name'),
+            'key_data': result.get('key_data'),  # The specific answer requested
+            'query_type': result.get('query_type')
+        }
+
+        # If from cache, get all data from DB
+        if result.get('source') == 'cache' and not response['data']:
+            db = get_db()
+            all_data = db.find_program_all_data(university, degree, field)
+            db.close()
+            if all_data:
+                response['data'] = all_data
+                response['data_year'] = all_data.get('data_year')
+
+        return jsonify(response)
     except Exception as e:
         return jsonify({'source': 'error', 'error': str(e)})
 
@@ -72,7 +113,13 @@ def fetch_all():
 
 @app.route('/api/findme', methods=['POST'])
 def find_for_me():
-    """Find universities matching user requirements"""
+    """Find universities matching user requirements using RAG
+
+    Uses semantic search + criteria matching to find best universities.
+    Returns match percentages based on:
+    - 40% semantic similarity (meaning match)
+    - 60% criteria fit (budget, GPA, field)
+    """
     try:
         data = request.json
         degree = data.get('degree', 'Master')
@@ -81,62 +128,57 @@ def find_for_me():
         min_gpa = data.get('minGPA', '')
         english_test = data.get('englishTest', 'TOEFL')
         english_score = data.get('englishScore', '')
-        country = data.get('country', 'USA')
+        country = data.get('country', '')  # Empty = any country
         prefer_scholarship = data.get('preferScholarship', False)
+        top_k = data.get('top_k', 3)  # Number of results to return
 
         if not field:
             return jsonify({'error': 'Please provide a field of study'})
 
-        # Build prompt for Claude
-        prompt = f"""Find 5 universities for a student with these requirements:
-- Degree: {degree}
-- Field: {field}
-- Maximum Tuition: {max_tuition or 'No limit'}
-- GPA: {min_gpa or 'Not specified'}
-- English Test: {english_test} with score {english_score or 'Not taken yet'}
-- Preferred Country: {country}
-- Needs Scholarship: {'Yes' if prefer_scholarship else 'No preference'}
+        # Check if RAG matcher is available
+        if rag_matcher is None:
+            return jsonify({'error': 'RAG system not initialized. Please restart the server.'})
 
-For each university, provide:
-1. University name
-2. Match score (0-100%)
-3. Tuition fees
-4. Application deadline
-5. Requirements summary
-6. Why this is a good match
+        # Prepare preferences for RAG matcher
+        preferences = {
+            'field': field,
+            'degree': degree,
+            'budget': float(max_tuition) if max_tuition else 100000,  # Default high budget
+            'gpa': float(min_gpa) if min_gpa else 4.0,  # Default high GPA
+        }
 
-Format your response as JSON array:
-[{{"name": "University Name", "match_score": 85, "tuition": "$50,000/year", "deadline": "January 1", "requirements": "TOEFL 100, GPA 3.5", "why_matched": "Reason..."}}]
+        # Only filter by country if specified
+        if country and country != 'Any':
+            preferences['country'] = country
 
-Only return the JSON array, no other text."""
+        # Find matches using RAG
+        results = rag_matcher.find_matches(preferences, top_k=int(top_k))
 
-        # Call Claude
-        result = subprocess.run(
-            ["claude.cmd", "--print", "--dangerously-skip-permissions", "-p", prompt],
-            capture_output=True,
-            text=True,
-            timeout=120
-        )
+        # Format results for frontend
+        universities = []
+        for result in results:
+            universities.append({
+                'name': result['university'],
+                'country': result['country'],
+                'match_score': result['match_percentage'],
+                'tuition': f"${result['tuition_fees']:,.0f}/year" if result['tuition_fees'] else 'Contact school',
+                'field': result['field'],
+                'degree': result['degree'],
+                'gpa_required': result['gpa_requirement'],
+                'score_breakdown': result['score_breakdown'],
+                'reasons': result.get('reasons', []),
+                'why_matched': f"Semantic match: {result['score_breakdown']['semantic_similarity']}%, Budget fit: {result['score_breakdown']['budget_fit']}%, GPA fit: {result['score_breakdown']['gpa_fit']}%"
+            })
 
-        response_text = result.stdout.strip()
+        return jsonify({
+            'universities': universities,
+            'source': 'rag',
+            'total_in_database': rag_matcher.vector_store.get_count()
+        })
 
-        # Try to parse JSON from response
-        try:
-            # Find JSON array in response
-            start = response_text.find('[')
-            end = response_text.rfind(']') + 1
-            if start != -1 and end > start:
-                json_str = response_text[start:end]
-                universities = json.loads(json_str)
-                return jsonify({'universities': universities})
-            else:
-                return jsonify({'error': 'Could not parse AI response', 'raw': response_text})
-        except json.JSONDecodeError:
-            return jsonify({'error': 'Invalid JSON in AI response', 'raw': response_text})
-
-    except subprocess.TimeoutExpired:
-        return jsonify({'error': 'AI search timed out. Please try again.'})
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e)})
 
 
@@ -199,13 +241,19 @@ def health():
 
 
 if __name__ == '__main__':
-    print("Starting SmartStudy Abroad API Server...")
-    print("Available endpoints:")
-    print("  POST /api/search - Search university data")
+    print("\n" + "="*60)
+    print("SmartStudy Abroad API Server")
+    print("="*60)
+    print("\nAvailable endpoints:")
+    print("  POST /api/search    - Search university data (Claude AI)")
     print("  POST /api/fetch_all - Fetch all data points")
-    print("  POST /api/findme - Find universities for requirements")
-    print("  POST /api/chat - Chat with AI")
-    print("  GET /api/programs - Get stored programs")
-    print("  GET /api/health - Health check")
+    print("  POST /api/findme    - Find universities (RAG - FAST, LOCAL)")
+    print("  POST /api/chat      - Chat with AI")
+    print("  GET  /api/programs  - Get stored programs")
+    print("  GET  /api/health    - Health check")
     print("")
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    print("RAG Status:", "ENABLED" if rag_matcher else "DISABLED")
+    if rag_matcher:
+        print(f"Universities in database: {rag_matcher.vector_store.get_count()}")
+    print("="*60 + "\n")
+    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)

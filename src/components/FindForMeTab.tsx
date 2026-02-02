@@ -13,12 +13,24 @@ interface Requirements {
   preferScholarship: boolean;
 }
 
+// Updated interface to match RAG response
+interface ScoreBreakdown {
+  semantic_similarity: number;
+  budget_fit: number;
+  gpa_fit: number;
+  field_match: number;
+}
+
 interface MatchedUniversity {
   name: string;
+  country: string;
   match_score: number;
   tuition: string;
-  deadline: string;
-  requirements: string;
+  field: string;
+  degree: string;
+  gpa_required: number;
+  score_breakdown: ScoreBreakdown;
+  reasons: string[];
   why_matched: string;
 }
 
@@ -39,6 +51,7 @@ export default function FindForMeTab({ onAIMessage }: FindForMeTabProps) {
   });
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<MatchedUniversity[]>([]);
+  const [totalInDatabase, setTotalInDatabase] = useState(0);
 
   const handleChange = (field: keyof Requirements, value: string | boolean) => {
     setRequirements(prev => ({ ...prev, [field]: value }));
@@ -51,20 +64,24 @@ export default function FindForMeTab({ onAIMessage }: FindForMeTabProps) {
     }
 
     setLoading(true);
-    onAIMessage('AI is searching for universities matching your requirements...');
+    onAIMessage('RAG is searching your local database...');
 
     try {
       const response = await fetch('/api/findme', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requirements),
+        body: JSON.stringify({
+          ...requirements,
+          top_k: 5  // Get top 5 matches
+        }),
       });
 
       const data = await response.json();
 
       if (data.universities) {
         setResults(data.universities);
-        onAIMessage(`Found ${data.universities.length} universities matching your criteria!`);
+        setTotalInDatabase(data.total_in_database || 0);
+        onAIMessage(`Found ${data.universities.length} best matches from ${data.total_in_database} universities! (RAG - Local Search)`);
       } else {
         onAIMessage(data.error || 'No universities found');
         setResults([]);
@@ -86,6 +103,21 @@ export default function FindForMeTab({ onAIMessage }: FindForMeTabProps) {
     { code: 'Any', name: 'Any Country', flag: '🌍' },
   ];
 
+  // Get color for score
+  const getScoreColor = (score: number) => {
+    if (score >= 90) return 'from-emerald-500 to-teal-500';
+    if (score >= 75) return 'from-blue-500 to-indigo-500';
+    if (score >= 60) return 'from-amber-500 to-orange-500';
+    return 'from-slate-400 to-slate-500';
+  };
+
+  const getScoreBgColor = (score: number) => {
+    if (score >= 90) return 'bg-emerald-500';
+    if (score >= 75) return 'bg-blue-500';
+    if (score >= 60) return 'bg-amber-500';
+    return 'bg-slate-400';
+  };
+
   return (
     <div className="space-y-8 slide-up">
       {/* Requirements Form Card */}
@@ -101,17 +133,20 @@ export default function FindForMeTab({ onAIMessage }: FindForMeTabProps) {
             </div>
             <div>
               <h2 className="text-2xl font-bold text-slate-800">Find Universities For Me</h2>
-              <p className="text-slate-500">Let AI match you with perfect universities</p>
+              <p className="text-slate-500">RAG-powered smart matching from your local database</p>
             </div>
           </div>
 
-          {/* Description Card */}
+          {/* RAG Info Card */}
           <div className="mb-8 p-4 rounded-2xl bg-gradient-to-r from-cyan-50 via-purple-50 to-pink-50 border border-purple-100">
             <div className="flex items-center gap-3">
-              <span className="text-2xl">✨</span>
-              <p className="text-slate-600">
-                Enter your academic profile and preferences, and our AI will find universities that match your criteria.
-              </p>
+              <span className="text-2xl">🚀</span>
+              <div>
+                <p className="font-semibold text-purple-700">Powered by RAG (Retrieval Augmented Generation)</p>
+                <p className="text-slate-600 text-sm">
+                  Searches 100 universities locally using AI embeddings. Fast, free, works offline!
+                </p>
+              </div>
             </div>
           </div>
 
@@ -190,27 +225,69 @@ export default function FindForMeTab({ onAIMessage }: FindForMeTabProps) {
                 </label>
                 <select
                   value={requirements.englishTest}
-                  onChange={(e) => handleChange('englishTest', e.target.value)}
+                  onChange={(e) => {
+                    handleChange('englishTest', e.target.value);
+                    handleChange('englishScore', ''); // Reset score when test changes
+                  }}
                   className="w-full px-5 py-4 rounded-2xl border-2 border-slate-200 focus:border-purple-500 focus:ring-4 focus:ring-purple-500/10 transition-all outline-none bg-white text-slate-800 cursor-pointer"
                 >
-                  <option value="TOEFL">TOEFL iBT</option>
-                  <option value="IELTS">IELTS Academic</option>
-                  <option value="Duolingo">Duolingo English Test</option>
+                  <option value="TOEFL">TOEFL iBT (0-120)</option>
+                  <option value="IELTS">IELTS Academic (0-9)</option>
+                  <option value="Duolingo">Duolingo English Test (10-160)</option>
                   <option value="None">No Test Yet</option>
                 </select>
               </div>
               <div>
                 <label className="block text-sm font-semibold text-slate-700 mb-2 flex items-center gap-2">
                   <span className="w-6 h-6 rounded-lg bg-indigo-100 flex items-center justify-center text-sm">📈</span>
-                  Your Score
+                  Your {requirements.englishTest === 'None' ? 'Score' : requirements.englishTest} Score
                 </label>
-                <input
-                  type="text"
-                  value={requirements.englishScore}
-                  onChange={(e) => handleChange('englishScore', e.target.value)}
-                  placeholder={requirements.englishTest === 'IELTS' ? 'e.g., 7.0' : requirements.englishTest === 'TOEFL' ? 'e.g., 100' : 'e.g., 120'}
-                  className="w-full px-5 py-4 rounded-2xl border-2 border-slate-200 focus:border-purple-500 focus:ring-4 focus:ring-purple-500/10 transition-all outline-none text-slate-800 placeholder:text-slate-400"
-                />
+                {requirements.englishTest === 'IELTS' ? (
+                  <select
+                    value={requirements.englishScore}
+                    onChange={(e) => handleChange('englishScore', e.target.value)}
+                    className="w-full px-5 py-4 rounded-2xl border-2 border-slate-200 focus:border-purple-500 focus:ring-4 focus:ring-purple-500/10 transition-all outline-none bg-white text-slate-800 cursor-pointer"
+                  >
+                    <option value="">Select IELTS Band</option>
+                    <option value="9.0">9.0 - Expert</option>
+                    <option value="8.5">8.5</option>
+                    <option value="8.0">8.0 - Very Good</option>
+                    <option value="7.5">7.5</option>
+                    <option value="7.0">7.0 - Good</option>
+                    <option value="6.5">6.5</option>
+                    <option value="6.0">6.0 - Competent</option>
+                    <option value="5.5">5.5</option>
+                    <option value="5.0">5.0 - Modest</option>
+                    <option value="4.5">4.5</option>
+                    <option value="4.0">4.0 - Limited</option>
+                  </select>
+                ) : requirements.englishTest === 'None' ? (
+                  <div className="w-full px-5 py-4 rounded-2xl border-2 border-slate-200 bg-slate-50 text-slate-400">
+                    No test selected
+                  </div>
+                ) : (
+                  <div className="relative">
+                    <input
+                      type="number"
+                      value={requirements.englishScore}
+                      onChange={(e) => handleChange('englishScore', e.target.value)}
+                      placeholder={requirements.englishTest === 'TOEFL' ? '0-120' : '10-160'}
+                      min={requirements.englishTest === 'TOEFL' ? 0 : 10}
+                      max={requirements.englishTest === 'TOEFL' ? 120 : 160}
+                      className="w-full px-5 py-4 rounded-2xl border-2 border-slate-200 focus:border-purple-500 focus:ring-4 focus:ring-purple-500/10 transition-all outline-none text-slate-800 placeholder:text-slate-400"
+                    />
+                    <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 text-sm">
+                      {requirements.englishTest === 'TOEFL' ? '/ 120' : '/ 160'}
+                    </span>
+                  </div>
+                )}
+                {requirements.englishTest !== 'None' && requirements.englishTest !== 'IELTS' && (
+                  <p className="mt-1 text-xs text-slate-500">
+                    {requirements.englishTest === 'TOEFL'
+                      ? 'Most universities require 80-100+'
+                      : 'Most universities require 105-120+'}
+                  </p>
+                )}
               </div>
             </div>
 
@@ -269,7 +346,7 @@ export default function FindForMeTab({ onAIMessage }: FindForMeTabProps) {
               {loading ? (
                 <>
                   <div className="w-6 h-6 border-3 border-white/30 border-t-white rounded-full animate-spin" />
-                  <span>AI is Finding Universities...</span>
+                  <span>RAG is Searching...</span>
                 </>
               ) : (
                 <>
@@ -292,9 +369,14 @@ export default function FindForMeTab({ onAIMessage }: FindForMeTabProps) {
                 🎉
               </div>
               <div>
-                <h3 className="text-xl font-bold text-slate-800">Matched Universities</h3>
-                <p className="text-slate-500">{results.length} universities found for you</p>
+                <h3 className="text-xl font-bold text-slate-800">Best Matches Found!</h3>
+                <p className="text-slate-500">
+                  Top {results.length} from {totalInDatabase} universities (RAG Search)
+                </p>
               </div>
+            </div>
+            <div className="px-4 py-2 rounded-full bg-emerald-100 text-emerald-700 text-sm font-medium">
+              Local AI Search
             </div>
           </div>
 
@@ -306,23 +388,89 @@ export default function FindForMeTab({ onAIMessage }: FindForMeTabProps) {
                 className="relative overflow-hidden bg-white rounded-3xl shadow-lg border border-slate-100 card-hover"
                 style={{ animationDelay: `${index * 100}ms` }}
               >
-                {/* Match Score Badge */}
-                <div className={`absolute top-0 right-0 px-6 py-2 rounded-bl-2xl font-bold text-white ${
-                  uni.match_score >= 90 ? 'bg-gradient-to-r from-emerald-500 to-teal-500' :
-                  uni.match_score >= 75 ? 'bg-gradient-to-r from-blue-500 to-indigo-500' :
-                  'bg-gradient-to-r from-amber-500 to-orange-500'
-                }`}>
-                  {uni.match_score}% Match
+                {/* Rank Badge */}
+                <div className="absolute top-4 left-4 w-10 h-10 rounded-full bg-slate-800 text-white flex items-center justify-center font-bold text-lg shadow-lg">
+                  #{index + 1}
                 </div>
 
-                <div className="p-6">
-                  {/* University Name */}
-                  <div className="flex items-center gap-3 mb-4 pr-24">
+                {/* Match Score Badge */}
+                <div className={`absolute top-0 right-0 px-6 py-3 rounded-bl-2xl font-bold text-white bg-gradient-to-r ${getScoreColor(uni.match_score)}`}>
+                  <div className="text-2xl">{uni.match_score}%</div>
+                  <div className="text-xs opacity-90">Match</div>
+                </div>
+
+                <div className="p-6 pt-8">
+                  {/* University Name & Location */}
+                  <div className="flex items-center gap-3 mb-4 pl-12 pr-24">
                     <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-purple-100 to-pink-100 flex items-center justify-center text-xl">
                       🏛️
                     </div>
-                    <h4 className="text-xl font-bold text-slate-800">{uni.name}</h4>
+                    <div>
+                      <h4 className="text-xl font-bold text-slate-800">{uni.name}</h4>
+                      <p className="text-slate-500">{uni.country} • {uni.field} • {uni.degree}</p>
+                    </div>
                   </div>
+
+                  {/* Score Breakdown - Visual Bars */}
+                  {uni.score_breakdown && (
+                    <div className="mb-6 p-4 rounded-2xl bg-slate-50 border border-slate-100">
+                      <p className="text-sm font-semibold text-slate-600 mb-3">Match Score Breakdown</p>
+                      <div className="space-y-3">
+                        {/* Semantic Similarity */}
+                        <div>
+                          <div className="flex justify-between text-sm mb-1">
+                            <span className="text-slate-600">🧠 Meaning Match</span>
+                            <span className="font-semibold text-purple-600">{uni.score_breakdown.semantic_similarity}%</span>
+                          </div>
+                          <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full transition-all duration-500"
+                              style={{ width: `${uni.score_breakdown.semantic_similarity}%` }}
+                            />
+                          </div>
+                        </div>
+                        {/* Budget Fit */}
+                        <div>
+                          <div className="flex justify-between text-sm mb-1">
+                            <span className="text-slate-600">💰 Budget Fit</span>
+                            <span className="font-semibold text-emerald-600">{uni.score_breakdown.budget_fit}%</span>
+                          </div>
+                          <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-gradient-to-r from-emerald-500 to-teal-500 rounded-full transition-all duration-500"
+                              style={{ width: `${uni.score_breakdown.budget_fit}%` }}
+                            />
+                          </div>
+                        </div>
+                        {/* GPA Fit */}
+                        <div>
+                          <div className="flex justify-between text-sm mb-1">
+                            <span className="text-slate-600">📊 GPA Qualification</span>
+                            <span className="font-semibold text-blue-600">{uni.score_breakdown.gpa_fit}%</span>
+                          </div>
+                          <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 rounded-full transition-all duration-500"
+                              style={{ width: `${uni.score_breakdown.gpa_fit}%` }}
+                            />
+                          </div>
+                        </div>
+                        {/* Field Match */}
+                        <div>
+                          <div className="flex justify-between text-sm mb-1">
+                            <span className="text-slate-600">🎯 Field Match</span>
+                            <span className="font-semibold text-amber-600">{uni.score_breakdown.field_match}%</span>
+                          </div>
+                          <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-gradient-to-r from-amber-500 to-orange-500 rounded-full transition-all duration-500"
+                              style={{ width: `${uni.score_breakdown.field_match}%` }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Quick Info Grid */}
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
@@ -334,26 +482,33 @@ export default function FindForMeTab({ onAIMessage }: FindForMeTabProps) {
                     </div>
                     <div className="p-4 rounded-2xl bg-gradient-to-br from-purple-50 to-pink-50 border border-purple-100">
                       <div className="flex items-center gap-2 text-purple-600 text-sm font-medium mb-1">
-                        <span>📅</span> Deadline
+                        <span>📊</span> GPA Required
                       </div>
-                      <p className="font-bold text-slate-800">{uni.deadline}</p>
+                      <p className="font-bold text-slate-800">{uni.gpa_required || 'Contact school'}</p>
                     </div>
                     <div className="p-4 rounded-2xl bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-100">
                       <div className="flex items-center gap-2 text-blue-600 text-sm font-medium mb-1">
-                        <span>📝</span> Requirements
+                        <span>🎓</span> Program
                       </div>
-                      <p className="font-bold text-slate-800">{uni.requirements}</p>
+                      <p className="font-bold text-slate-800">{uni.degree}</p>
                     </div>
                   </div>
 
-                  {/* Why Matched */}
-                  {uni.why_matched && (
+                  {/* Reasons */}
+                  {uni.reasons && uni.reasons.length > 0 && (
                     <div className="p-4 rounded-2xl bg-gradient-to-r from-cyan-50 via-purple-50 to-pink-50 border border-purple-100">
                       <div className="flex items-start gap-3">
-                        <span className="text-xl">✨</span>
+                        <span className="text-xl">✅</span>
                         <div>
-                          <p className="font-semibold text-purple-700 mb-1">Why This University Matches</p>
-                          <p className="text-slate-600">{uni.why_matched}</p>
+                          <p className="font-semibold text-purple-700 mb-2">Why This University Matches</p>
+                          <ul className="space-y-1">
+                            {uni.reasons.map((reason, i) => (
+                              <li key={i} className="text-slate-600 flex items-center gap-2">
+                                <span className="w-1.5 h-1.5 rounded-full bg-purple-400"></span>
+                                {reason}
+                              </li>
+                            ))}
+                          </ul>
                         </div>
                       </div>
                     </div>
@@ -361,6 +516,31 @@ export default function FindForMeTab({ onAIMessage }: FindForMeTabProps) {
                 </div>
               </div>
             ))}
+          </div>
+
+          {/* How RAG Works Explanation */}
+          <div className="p-6 rounded-3xl bg-gradient-to-r from-slate-800 to-slate-900 text-white">
+            <h4 className="text-lg font-bold mb-3 flex items-center gap-2">
+              <span>🤖</span> How This Search Works (RAG Technology)
+            </h4>
+            <div className="grid md:grid-cols-4 gap-4 text-sm">
+              <div className="p-3 rounded-xl bg-white/10">
+                <div className="text-2xl mb-2">1️⃣</div>
+                <p><strong>Your Input</strong> is converted to numbers (384-dimensional vector)</p>
+              </div>
+              <div className="p-3 rounded-xl bg-white/10">
+                <div className="text-2xl mb-2">2️⃣</div>
+                <p><strong>Vector Search</strong> finds universities with similar meaning</p>
+              </div>
+              <div className="p-3 rounded-xl bg-white/10">
+                <div className="text-2xl mb-2">3️⃣</div>
+                <p><strong>Criteria Check</strong> scores budget, GPA, and field match</p>
+              </div>
+              <div className="p-3 rounded-xl bg-white/10">
+                <div className="text-2xl mb-2">4️⃣</div>
+                <p><strong>Final Score</strong> = 40% semantic + 60% criteria</p>
+              </div>
+            </div>
           </div>
         </div>
       )}
