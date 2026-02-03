@@ -4,5 +4,5 @@ pymongo>=4.0.0
 schedule>=1.2.0
 
 # RAG dependencies for "Find For Me" feature
-sentence-transformers>=5.0.0
-chromadb>=1.0.0
+sentence-transformers>=2.0.0
+chromadb==0.4.22
