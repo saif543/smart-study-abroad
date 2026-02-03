@@ -34,7 +34,6 @@ Measures how similar two vectors are (0 to 1):
 
 import chromadb
 from chromadb.config import Settings
-import sys
 import json
 import os
 import re
@@ -118,12 +117,7 @@ class VectorStore:
 
         # Create ChromaDB client with persistence
         # This saves data to disk so it survives program restarts
-        # Using 0.4.x API for compatibility
-        self.client = chromadb.Client(Settings(
-            chroma_db_impl="duckdb+parquet",
-            persist_directory=persist_directory,
-            anonymized_telemetry=False
-        ))
+        self.client = chromadb.PersistentClient(path=persist_directory)
 
         # Get or create our collection (like a "table" in regular databases)
         # We call it "universities" to store university vectors
@@ -234,9 +228,6 @@ class VectorStore:
             metadatas=metadatas,
             documents=documents
         )
-
-        # Persist to disk (required for chromadb 0.4.x)
-        self.client.persist()
 
         print(f"Added {len(ids)} universities to vector store")
         return len(ids)
