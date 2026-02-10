@@ -123,7 +123,7 @@ class VectorStore:
         # We call it "universities" to store university vectors
         self.collection = self.client.get_or_create_collection(
             name="universities",
-            metadata={"description": "University embeddings for RAG search"}
+            metadata={"description": "University embeddings for RAG search", "hnsw:space": "cosine"}
         )
 
         print(f"Collection 'universities' ready. Current count: {self.collection.count()}")
@@ -217,8 +217,23 @@ class VectorStore:
             }
             metadatas.append(metadata)
 
-            # Create document text
-            doc = f"{metadata['university']} - {uni.get('degree', '')} in {uni.get('field', '')} ({metadata['country']})"
+            # Create enriched document text (improves BM25 keyword recall)
+            parts = [
+                metadata['university'],
+                uni.get('degree', ''),
+                uni.get('field', ''),
+                metadata['country'],
+            ]
+            tuition = metadata['tuition_fees']
+            if tuition:
+                parts.append(f"tuition ${tuition:,.0f}" if isinstance(tuition, (int, float)) else f"tuition {tuition}")
+            gpa = metadata['gpa_requirement']
+            if gpa:
+                parts.append(f"GPA {gpa}")
+            scholarships = uni.get('scholarships', '')
+            if scholarships:
+                parts.append(f"scholarships: {scholarships}")
+            doc = " | ".join(p for p in parts if p)
             documents.append(doc)
 
         # Batch add to ChromaDB
@@ -274,12 +289,11 @@ class VectorStore:
         formatted_results = []
         if results and results['ids'] and results['ids'][0]:
             for i in range(len(results['ids'][0])):
-                # ChromaDB returns L2 distance, convert to similarity score
+                # ChromaDB returns cosine distance (0-2 range), convert to similarity
                 # Lower distance = more similar
                 distance = results['distances'][0][i]
-                # Convert distance to similarity (0-1 scale)
-                # Using formula: similarity = 1 / (1 + distance)
-                similarity = 1 / (1 + distance)
+                # Convert cosine distance to similarity (0-1 scale)
+                similarity = 1.0 - (distance / 2.0)
 
                 formatted_results.append({
                     'id': results['ids'][0][i],
@@ -291,6 +305,18 @@ class VectorStore:
 
         return formatted_results
 
+    def get_all_documents(self) -> Dict[str, Any]:
+        """
+        Return all stored IDs, documents, and metadatas.
+        Used by BM25 index to build a keyword search index.
+        """
+        results = self.collection.get(include=['documents', 'metadatas'])
+        return {
+            'ids': results['ids'],
+            'documents': results['documents'],
+            'metadatas': results['metadatas'],
+        }
+
     def clear_all(self):
         """
         Remove all universities from the store.
@@ -300,7 +326,7 @@ class VectorStore:
         self.client.delete_collection("universities")
         self.collection = self.client.get_or_create_collection(
             name="universities",
-            metadata={"description": "University embeddings for RAG search"}
+            metadata={"description": "University embeddings for RAG search", "hnsw:space": "cosine"}
         )
         print("Vector store cleared!")
 

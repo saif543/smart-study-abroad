@@ -115,10 +115,11 @@ def fetch_all():
 def find_for_me():
     """Find universities matching user requirements using RAG
 
-    Uses semantic search + criteria matching to find best universities.
+    Uses hybrid search (vector + BM25 + cross-encoder) + criteria matching.
     Returns match percentages based on:
-    - 40% semantic similarity (meaning match)
-    - 60% criteria fit (budget, GPA, field)
+    - 35% semantic similarity (vector + BM25 fused)
+    - 5% re-rank confidence (cross-encoder)
+    - 60% criteria fit (budget, GPA, field, English, scholarships)
     """
     try:
         data = request.json
@@ -145,6 +146,9 @@ def find_for_me():
             'degree': degree,
             'budget': float(max_tuition) if max_tuition else 100000,  # Default high budget
             'gpa': float(min_gpa) if min_gpa else 4.0,  # Default high GPA
+            'english_test': english_test,  # 'TOEFL' or 'IELTS'
+            'english_score': float(english_score) if english_score else 0,
+            'prefer_scholarship': prefer_scholarship,
         }
 
         # Only filter by country if specified
@@ -157,6 +161,7 @@ def find_for_me():
         # Format results for frontend
         universities = []
         for result in results:
+            bd = result['score_breakdown']
             universities.append({
                 'name': result['university'],
                 'country': result['country'],
@@ -165,9 +170,12 @@ def find_for_me():
                 'field': result['field'],
                 'degree': result['degree'],
                 'gpa_required': result['gpa_requirement'],
-                'score_breakdown': result['score_breakdown'],
+                'ielts': result.get('ielts', 0),
+                'toefl': result.get('toefl', 0),
+                'scholarships': result.get('scholarships', ''),
+                'score_breakdown': bd,
                 'reasons': result.get('reasons', []),
-                'why_matched': f"Semantic match: {result['score_breakdown']['semantic_similarity']}%, Budget fit: {result['score_breakdown']['budget_fit']}%, GPA fit: {result['score_breakdown']['gpa_fit']}%"
+                'why_matched': f"Semantic: {bd['semantic_similarity']}%, Budget: {bd['budget_fit']}%, GPA: {bd['gpa_fit']}%, English: {bd['english_fit']}%, Scholarship: {bd['scholarship_fit']}%"
             })
 
         return jsonify({
