@@ -1,66 +1,117 @@
 # SmartStudy Abroad — Setup Guide
 
-## How to Run on Your PC
+## Step 1: Install These Software
 
-### Step 1: Install Prerequisites
+Download and install all three:
 
-| Software | Version | Download |
-|----------|---------|----------|
-| Python | 3.11.x | https://www.python.org/downloads/ |
-| Node.js | 18+ | https://nodejs.org/ |
-| Git | Latest | https://git-scm.com/ |
-
-Optional (not required for ML matching):
-
-| Software | Purpose | Download |
-|----------|---------|----------|
-| MongoDB | Caching search results | https://www.mongodb.com/try/download/community |
-| Ollama | AI chatbot feature | https://ollama.ai |
+1. **Python 3.11** → https://www.python.org/downloads/
+   - During installation, CHECK "Add Python to PATH"
+2. **Node.js 18+** → https://nodejs.org/ (download LTS version)
+3. **Git** → https://git-scm.com/
 
 ---
 
-### Step 2: Clone the Repository
+## Step 2: Clone the Project
+
+Open terminal (Command Prompt or PowerShell) and run:
 
 ```bash
 git clone https://github.com/saif543/smart-study-abroad.git
+```
+
+Then go inside the folder:
+
+```bash
 cd smart-study-abroad
+```
+
+Switch to the saif branch:
+
+```bash
 git checkout saif
 ```
 
 ---
 
-### Step 3: Install Frontend Dependencies
+## Step 3: Install Frontend (Next.js)
+
+Still inside `smart-study-abroad/` folder, run:
 
 ```bash
 npm install
 ```
 
+Wait until it finishes. This installs React, Next.js, Tailwind CSS, etc.
+
 ---
 
-### Step 4: Install Backend Dependencies
+## Step 4: Create Python Virtual Environment
+
+```bash
+cd backend
+python -m venv venv
+```
+
+If `python` doesn't work on Windows, try:
+
+```bash
+py -m venv venv
+```
+
+This creates a `venv/` folder inside `backend/`.
+
+---
+
+## Step 5: Activate the Virtual Environment
+
+**Windows (Command Prompt):**
+```bash
+venv\Scripts\activate
+```
+
+**Windows (PowerShell):**
+```bash
+venv\Scripts\Activate.ps1
+```
+
+**Mac / Linux:**
+```bash
+source venv/bin/activate
+```
+
+You should see `(venv)` at the start of your terminal line. That means it's active.
+
+---
+
+## Step 6: Install Python Packages
+
+With venv activated (you should see `(venv)` in terminal), run:
 
 ```bash
 pip install flask flask-cors pymongo joblib numpy pandas scikit-learn chromadb sentence-transformers requests rank_bm25
 ```
 
-On Windows (if `pip` doesn't work):
-
-```bash
-py -m pip install flask flask-cors pymongo joblib numpy pandas scikit-learn chromadb sentence-transformers requests rank_bm25
-```
+Wait until everything finishes installing.
 
 ---
 
-### Step 5: Start the Backend
+## Step 7: Start the Backend
 
-Open a terminal and run:
+Still inside `backend/` folder with venv activated, run:
 
 ```bash
-cd backend
+python api_server.py
+```
+
+Or on Windows:
+
+```bash
 py api_server.py
 ```
 
-Wait until you see (takes ~30 seconds, first time downloads ~110MB of embedding models):
+Wait ~30 seconds. First time it downloads ~110MB of ML models (needs internet).
+
+You should see:
 
 ```
 ML predictor loaded successfully!
@@ -70,120 +121,95 @@ SmartStudy Abroad API Server
  * Running on http://0.0.0.0:5000
 ```
 
+**Keep this terminal open. Don't close it.**
+
 ---
 
-### Step 6: Start the Frontend
+## Step 8: Start the Frontend
 
-Open a **second terminal** and run:
+Open a **NEW / second terminal**.
+
+Go to the project root folder:
+
+```bash
+cd smart-study-abroad
+```
+
+Run:
 
 ```bash
 npm run dev
 ```
 
-Wait for:
+You should see:
 
 ```
 ✓ Ready in X.Xs
 - Local: http://localhost:3000
 ```
 
----
-
-### Step 7: Open in Browser
-
-Go to: **http://localhost:3000**
-
-Click the **"Find For Me"** tab to use ML university matching.
+**Keep this terminal open too.**
 
 ---
 
-## What Each Port Does
+## Step 9: Open in Browser
 
-| Service | Port | Required |
-|---------|------|----------|
-| Next.js Frontend | 3000 | Yes |
-| Flask Backend | 5000 | Yes |
-| MongoDB | 27017 | No (optional caching) |
-| Ollama LLM | 11434 | No (optional chatbot) |
+Open your browser and go to:
+
+**http://localhost:3000**
+
+Click the **"Find For Me"** tab → fill the form → click "Find Best Matches" → see ML results.
 
 ---
 
-## Project Structure
+## Summary: Two Terminals Running
 
-```
-smart-study-abroad/
-├── src/                              # FRONTEND (Next.js + React)
-│   ├── app/
-│   │   ├── page.tsx                  # Main page
-│   │   └── api/                      # API proxy routes
-│   │       ├── findme/route.ts       # → Flask /api/findme
-│   │       ├── predict/route.ts      # → Flask /api/predict
-│   │       ├── cost/route.ts         # → Flask /api/cost
-│   │       └── chat/route.ts         # → Flask /api/chat
-│   └── components/
-│       ├── FindForMeTab.tsx          # ML university matching (main feature)
-│       ├── AdmissionPredictor.tsx    # ML admission prediction
-│       ├── CostCalculator.tsx        # Cost breakdown calculator
-│       ├── SearchTab.tsx             # University search
-│       ├── AIChat.tsx                # AI chatbot
-│       └── Navbar.tsx                # Navigation bar
-│
-├── backend/                          # BACKEND (Python Flask)
-│   ├── api_server.py                 # Flask server (all API endpoints)
-│   ├── cost_calculator.py            # Cost calculation logic
-│   ├── cost_of_living.json           # Cost data for 20+ countries
-│   ├── ollama_handler.py             # Ollama LLM chat
-│   ├── mongodb_handler.py            # MongoDB caching
-│   │
-│   ├── ml/                           # MACHINE LEARNING
-│   │   ├── predictor.py              # GradientBoosting prediction logic
-│   │   ├── retrain_sa.py             # Model retraining script
-│   │   ├── university_match_pipeline.pkl    # Trained model (336KB)
-│   │   ├── feature_importances_sa.csv       # Feature importance data
-│   │   ├── university_dataset_multilabel.csv # 232 universities
-│   │   └── student_dataset_multilabel.csv    # 500 student profiles
-│   │
-│   └── rag/                          # RAG (Retrieval-Augmented Generation)
-│       ├── matcher.py                # Search orchestration
-│       ├── embedder.py               # Sentence-transformers embeddings
-│       ├── vector_store.py           # ChromaDB vector database
-│       ├── bm25_search.py            # BM25 keyword search
-│       ├── reranker.py               # Cross-encoder reranker
-│       └── chroma_db_unified/        # Vector database (5.4MB, 617 entries)
-│
-├── package.json
-├── tailwind.config.ts
-└── tsconfig.json
+| Terminal | Folder | Command | Port |
+|----------|--------|---------|------|
+| Terminal 1 | `smart-study-abroad/backend/` | `python api_server.py` | 5000 |
+| Terminal 2 | `smart-study-abroad/` | `npm run dev` | 3000 |
+
+Both must stay open while using the app.
+
+---
+
+## Next Time You Want to Run (After First Setup)
+
+You don't need to install anything again. Just:
+
+**Terminal 1:**
+```bash
+cd smart-study-abroad/backend
+venv\Scripts\activate
+python api_server.py
 ```
 
----
+**Terminal 2:**
+```bash
+cd smart-study-abroad
+npm run dev
+```
 
-## First-Time Auto-Downloads
-
-On first backend startup, these models download automatically (~110MB total):
-
-| Model | Size | Purpose |
-|-------|------|---------|
-| all-MiniLM-L6-v2 | ~90 MB | Text embeddings |
-| ms-marco-MiniLM-L-6-v2 | ~22 MB | Search reranking |
-
-Needs internet first time only. Cached locally after that.
+Open http://localhost:3000
 
 ---
 
 ## Troubleshooting
 
+**"python not found"**
+→ Use `py` instead of `python` on Windows
+
+**"npm not found"**
+→ Install Node.js from https://nodejs.org/ and restart terminal
+
 **"ML predictor not loaded"**
-→ Check `backend/ml/university_match_pipeline.pkl` exists in the repo
+→ Make sure you're on the `saif` branch: `git checkout saif`
 
 **"No results" on Find For Me**
-→ Make sure backend is running: open http://localhost:5000/api/health in browser
+→ Make sure backend terminal shows "Running on port 5000"
 
-**Frontend won't start**
-→ Run `npm install` first. Check Node.js: `node --version` (need 18+)
+**"Cannot activate venv" on PowerShell**
+→ Run this first: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
 
-**Python import errors**
-→ Run the pip install command from Step 4 again. Check Python: `py --version` (need 3.11+)
-
-**"Ollama: NOT AVAILABLE"**
-→ This is fine. Only affects chatbot. ML matching works without Ollama.
+**Import errors in Python**
+→ Make sure venv is activated (you see `(venv)`) then run pip install again from Step 6
