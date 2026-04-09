@@ -18,6 +18,20 @@ def normalize_university_name(name):
     return name
 
 
+def extract_search_keywords(name):
+    """Extract key search words from university name for fuzzy matching"""
+    name = name.lower().strip()
+    # Remove common words that don't help with matching
+    remove_words = ['university', 'college', 'institute', 'school', 'of', 'the', 'and', '&',
+                   'technology', 'sciences', 'arts', 'engineering', 'national', 'state',
+                   '(', ')', ',', '-']
+    for word in remove_words:
+        name = name.replace(word, ' ')
+    # Get unique significant words
+    words = [w.strip() for w in name.split() if len(w.strip()) > 2]
+    return words
+
+
 class MongoDBHandler:
     """Handler for MongoDB - ONE document per program"""
 
@@ -87,17 +101,30 @@ class MongoDBHandler:
             return result.inserted_id
 
     def find_data(self, university, degree, field, query_type):
-        """Find specific data from program document"""
-        uni_key = normalize_university_name(university)
+        """Find specific data from program document with fuzzy university matching"""
         deg_key = degree.lower().strip()
         field_key = field.lower().strip()
         qtype_key = query_type.lower().strip()
 
+        # First try exact match
+        uni_key = normalize_university_name(university)
         result = self.collection.find_one({
             "university": uni_key,
             "degree": deg_key,
             "field": field_key
         })
+
+        # If not found, try fuzzy match using keywords
+        if not result:
+            search_keywords = extract_search_keywords(university)
+            if search_keywords:
+                # Build regex pattern to match any document containing the main keyword
+                main_keyword = search_keywords[0]  # e.g., "stanford", "mit", "harvard"
+                result = self.collection.find_one({
+                    "university": {"$regex": main_keyword, "$options": "i"},
+                    "degree": deg_key,
+                    "field": field_key
+                })
 
         if result and qtype_key in result:
             return {
@@ -109,12 +136,27 @@ class MongoDBHandler:
         return {"found": False, "data": None}
 
     def find_program_all_data(self, university, degree, field):
-        """Get ALL stored data for a specific program including data_year"""
+        """Get ALL stored data for a specific program including data_year (with fuzzy matching)"""
+        deg_key = degree.lower().strip()
+        field_key = field.lower().strip()
+
+        # First try exact match
         result = self.collection.find_one({
             "university": normalize_university_name(university),
-            "degree": degree.lower().strip(),
-            "field": field.lower().strip()
+            "degree": deg_key,
+            "field": field_key
         })
+
+        # If not found, try fuzzy match using keywords
+        if not result:
+            search_keywords = extract_search_keywords(university)
+            if search_keywords:
+                main_keyword = search_keywords[0]
+                result = self.collection.find_one({
+                    "university": {"$regex": main_keyword, "$options": "i"},
+                    "degree": deg_key,
+                    "field": field_key
+                })
 
         if result:
             # Remove internal fields, return only data (but keep data_year)

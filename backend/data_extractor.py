@@ -138,7 +138,13 @@ class DataExtractor:
 
     def search_and_store(self, university, degree, field, question):
         """
-        Search with Claude and store ONLY key data
+        Search with Claude and store ALL 7 data points, but return only the requested data.
+
+        Strategy:
+        1. Check cache for the specific field user asked for
+        2. If not cached, fetch ALL 7 data points at once (efficient)
+        3. Store all data in MongoDB
+        4. Return only the specific data user asked for
 
         Returns:
             dict with key_data and full_response
@@ -162,7 +168,7 @@ class DataExtractor:
                 "cached_at": None,
                 "data_year": smart_cached.get("data_year")
             }
-        
+
         # Fallback: exact field match
         cached = self.db.find_data(university, degree, field, query_type)
         if cached["found"]:
@@ -174,34 +180,100 @@ class DataExtractor:
                 "cached_at": cached["updated_at"].isoformat() if cached["updated_at"] else None
             }
 
-        # Not in cache - ask Claude for ONLY the key data
-        prompt = self._build_extraction_prompt(university, degree, field, question, query_type)
+        # NOT IN CACHE - Fetch ALL 7 data points at once (more efficient)
+        # This way one search stores everything for future queries
+        all_data_result = self._fetch_and_store_all_data(university, degree, field)
 
-        # Send to Claude
-        response = self._send_to_claude(prompt)
-
-        if not response["success"]:
+        if all_data_result["source"] == "error":
             return {
                 "source": "error",
                 "query_type": query_type,
                 "key_data": None,
-                "full_response": response.get("error", "Unknown error"),
+                "full_response": all_data_result.get("full_response", "Unknown error"),
                 "cached_at": None
             }
 
-        # Extract key data from response
-        key_data = self._extract_key_value(response["text"], query_type)
+        # Extract only the specific data user asked for
+        extracted_data = all_data_result.get("data", {})
 
-        # Store in database
-        if key_data:
-            self.db.store_data(university, degree, field, query_type, key_data)
+        # Map query_type to the corresponding field in extracted_data
+        query_to_field_map = {
+            "tuition_fees": "tuition_fees",
+            "admission_requirements": ["english_requirements", "gpa_requirement", "test_requirements"],
+            "deadline_fall": "deadline_fall",
+            "deadline_spring": "deadline_spring",
+            "deadline_summer": "deadline_summer",
+            "scholarships": "scholarships",
+            "english_requirements": "english_requirements",
+            "test_requirements": "test_requirements",
+            "program_duration": "program_duration",
+            "ranking": "ranking",
+            "career_prospects": "career_prospects",
+            "general_info": None
+        }
+
+        # Get the specific data user requested
+        field_key = query_to_field_map.get(query_type)
+        if isinstance(field_key, list):
+            # Multiple fields (like admission_requirements)
+            parts = []
+            for fk in field_key:
+                if fk in extracted_data and extracted_data[fk]:
+                    parts.append(f"{fk.replace('_', ' ').title()}: {extracted_data[fk]}")
+            key_data = " | ".join(parts) if parts else None
+        elif field_key and field_key in extracted_data:
+            key_data = extracted_data[field_key]
+        else:
+            # Return all data if query type not mapped
+            key_data = str(extracted_data) if extracted_data else None
 
         return {
             "source": "claude",
             "query_type": query_type,
             "key_data": key_data,
-            "full_response": response["text"],
+            "full_response": all_data_result.get("descriptive", all_data_result.get("full_response", "")),
+            "all_data": extracted_data,  # Include all data for frontend if needed
+            "official_name": all_data_result.get("official_name"),  # Official university name
             "cached_at": None
+        }
+
+    def _fetch_and_store_all_data(self, university, degree, field):
+        """
+        Internal method to fetch ALL 7 data points from Claude and store them.
+        Called when data is not in cache.
+        """
+        prompt = self._build_all_data_prompt(university, degree, field)
+
+        response = self._send_to_claude(prompt)
+
+        if not response["success"]:
+            return {
+                "source": "error",
+                "data": None,
+                "full_response": response.get("error", "Unknown error")
+            }
+
+        # Parse the response to extract all 7 fields
+        extracted_data = self._parse_all_data(response["text"])
+
+        # Get descriptive part for display
+        descriptive_response = self._get_descriptive_part(response["text"])
+
+        # Use official university name if Claude found it
+        official_name = extracted_data.pop("official_name", None)
+        store_university = official_name if official_name else university
+
+        # Store ALL fields in database (all go to same document)
+        for field_name, value in extracted_data.items():
+            if value:  # Only store if value exists
+                self.db.store_data(store_university, degree, field, field_name, value)
+
+        return {
+            "source": "claude",
+            "data": extracted_data,
+            "official_name": store_university,
+            "descriptive": descriptive_response,
+            "full_response": response["text"]
         }
 
     def _build_extraction_prompt(self, university, degree, field, question, query_type):

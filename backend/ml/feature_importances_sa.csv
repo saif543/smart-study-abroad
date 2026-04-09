@@ -1,0 +1,66 @@
+Feature,Importance
+subject_match,0.4864449629998621
+ielts_diff,0.168522448777814
+gpa_diff,0.08419007733922279
+GPA,0.0837710803985831
+Research_Exp,0.058159845581513187
+ECA_Level,0.030483519955486264
+budget_ratio,0.022712053616022927
+gre_diff,0.02057086501284029
+qs_ranking,0.01653352014048066
+sat_diff,0.006786205417996107
+IELTS,0.00535963395607506
+Budget_USD,0.005068805021512749
+research_weight,0.003245746235787887
+GRE,0.0032319550229763126
+eca_weight,0.0023227166330217703
+SAT,0.0009636038195644974
+total_cost_estimated,0.00039791275463516956
+country_United Kingdom,0.0003289366242265689
+country_United States,0.00024834880072218557
+country_Canada,0.0002397472284075919
+min_gpa,0.00023794900803242203
+country_China,7.91749252625992e-05
+Ielts_requirement,4.972297079560118e-05
+country_Germany,1.6359063856132893e-05
+country_Spain,1.2054926888719152e-05
+Preferred_Country_United Kingdom,1.0773049576358962e-05
+country_Hong Kong,2.4403003479245312e-06
+country_Sweden,1.9460911199860725e-06
+Subject_Pref_business,1.3940345348899964e-06
+country_France,1.322443111557576e-06
+country_Austria,1.2199884711805321e-06
+country_Japan,7.91542034683601e-07
+Subject_Pref_computer science,6.152582281955311e-07
+Subject_Pref_engineering,6.03225979092049e-07
+Subject_Pref_arts,4.135429981030734e-07
+country_Belgium,3.7111184506968324e-07
+Preferred_Country_Canada,3.2557854657952544e-07
+country_Poland,2.721260776851752e-07
+country_Ireland,2.654755419757775e-07
+Subject_Pref_medicine,0.0
+Preferred_Country_Australia,0.0
+country_Bulgaria,0.0
+country_Australia,0.0
+Preferred_Country_Germany,0.0
+Preferred_Country_United States,0.0
+country_Finland,0.0
+country_Denmark,0.0
+country_Czech Republic,0.0
+country_Italy,0.0
+country_Norway,0.0
+country_New Zealand,0.0
+country_Netherlands,0.0
+country_Macao,0.0
+country_Portugal,0.0
+country_Romania,0.0
+country_Russian Federation,0.0
+country_Saudi Arabia,0.0
+country_South Africa,0.0
+country_Slovenia,0.0
+country_Singapore,0.0
+country_Serbia,0.0
+country_Switzerland,0.0
+country_South Korea,0.0
+country_United Arab Emirates,0.0
+country_Taiwan,0.0

@@ -67,16 +67,20 @@ class UniversityMatcher:
     """
 
     # Weights for final score calculation
-    SEMANTIC_WEIGHT = 0.35   # 35% from meaning similarity (vector + BM25 fused)
+    SEMANTIC_WEIGHT = 0.30   # 30% from meaning similarity (vector + BM25 fused)
     RERANK_WEIGHT = 0.05     # 5% from cross-encoder re-ranking confidence
-    CRITERIA_WEIGHT = 0.60   # 60% from practical criteria
+    CRITERIA_WEIGHT = 0.65   # 65% from practical criteria (increased — we have richer data now)
 
-    # Breakdown of criteria weights (must sum to CRITERIA_WEIGHT = 0.60)
-    BUDGET_WEIGHT = 0.20     # 20% - Can you afford it?
-    GPA_WEIGHT = 0.15        # 15% - Are you qualified?
-    FIELD_WEIGHT = 0.10      # 10% - Exact field match?
-    ENGLISH_WEIGHT = 0.10    # 10% - Do you meet English requirements?
-    SCHOLARSHIP_WEIGHT = 0.05  # 5% - Scholarships available?
+    # Breakdown of criteria weights (must sum to CRITERIA_WEIGHT = 0.65)
+    BUDGET_WEIGHT = 0.12     # 12% - Total cost fit (tuition + living)
+    GPA_WEIGHT = 0.10        # 10% - Are you qualified?
+    FIELD_WEIGHT = 0.08      # 8% - Exact field match?
+    ENGLISH_WEIGHT = 0.05    # 5% - Do you meet English requirements?
+    SCHOLARSHIP_WEIGHT = 0.05  # 5% - Scholarships available? (uses max_coverage_percent)
+    QS_RANKING_WEIGHT = 0.10  # 10% - QS World University Ranking
+    ACCEPTANCE_WEIGHT = 0.08  # 8% - Realistic admission chance based on acceptance rate
+    WORK_VISA_WEIGHT = 0.04  # 4% - Work visa availability for international students
+    RESEARCH_WEIGHT = 0.03   # 3% - Research fit for the student
 
     def __init__(self, embedder: Embedder = None, vector_store: VectorStore = None):
         """
@@ -133,7 +137,7 @@ class UniversityMatcher:
         """
         print(f"\nFinding matches for: {preferences}")
 
-        fetch_k = top_k * 3  # Get extra candidates for re-ranking
+        fetch_k = max(top_k * 5, 30)  # Get more candidates for re-ranking
 
         # --- Step 1: Vector search (ChromaDB cosine) ---
         query_embedding = self.embedder.embed_user_query(preferences)
@@ -208,6 +212,20 @@ class UniversityMatcher:
                 criteria_score * self.CRITERIA_WEIGHT
             )
 
+            # Apply hard penalty for over-budget universities (tuition only)
+            user_budget = preferences.get('budget', 0)
+            tuition = metadata.get('tuition_fees', 0)
+            if user_budget and tuition and tuition > user_budget:
+                over_ratio = tuition / user_budget
+                if over_ratio > 2.0:
+                    final_score *= 0.3  # 70% penalty if more than 2x over budget
+                elif over_ratio > 1.5:
+                    final_score *= 0.5  # 50% penalty if more than 1.5x over
+                elif over_ratio > 1.2:
+                    final_score *= 0.7  # 30% penalty if more than 20% over
+                else:
+                    final_score *= 0.85  # 15% penalty if slightly over
+
             # Convert to percentage (0-100)
             match_percentage = round(final_score * 100, 1)
 
@@ -221,6 +239,24 @@ class UniversityMatcher:
                 'ielts': metadata.get('ielts', 0),
                 'toefl': metadata.get('toefl', 0),
                 'scholarships': metadata.get('scholarships', ''),
+                'deadline_fall': metadata.get('deadline_fall', ''),
+                'deadline_spring': metadata.get('deadline_spring', ''),
+                'test_requirements': metadata.get('test_requirements', ''),
+                'program_duration': metadata.get('program_duration', ''),
+                'english_requirements': metadata.get('english_requirements', ''),
+                'qs_ranking': metadata.get('qs_ranking', ''),
+                # New unified fields from ML dataset
+                'acceptance_rate': metadata.get('acceptance_rate', 0),
+                'living_cost': metadata.get('living_cost', 0),
+                'total_cost_estimated': metadata.get('total_cost_estimated', 0),
+                'scholarship_available': metadata.get('scholarship_available', 0),
+                'max_coverage_percent': metadata.get('max_coverage_percent', 0),
+                'work_visa_available': metadata.get('work_visa_available', 0),
+                'research_weight': metadata.get('research_weight', 0),
+                'eca_weight': metadata.get('eca_weight', 0),
+                'research_focus': metadata.get('research_focus', ''),
+                'programs_offered': metadata.get('programs_offered', ''),
+                'min_gre': metadata.get('min_gre', 0),
                 'match_percentage': match_percentage,
                 'score_breakdown': {
                     'semantic_similarity': round(semantic_score * 100, 1),
@@ -230,6 +266,10 @@ class UniversityMatcher:
                     'field_match': round(scores['field'] * 100, 1),
                     'english_fit': round(scores['english'] * 100, 1),
                     'scholarship_fit': round(scores['scholarship'] * 100, 1),
+                    'qs_ranking_score': round(scores['qs_ranking'] * 100, 1),
+                    'acceptance_score': round(scores['acceptance'] * 100, 1),
+                    'work_visa_score': round(scores['work_visa'] * 100, 1),
+                    'research_score': round(scores['research'] * 100, 1),
                 },
                 'reasons': self._generate_match_reasons(preferences, metadata, scores)
             })
@@ -249,8 +289,16 @@ class UniversityMatcher:
 
     @staticmethod
     def _build_query_text(preferences: Dict[str, Any]) -> str:
-        """Convert user preferences dict into a BM25-friendly query string."""
+        """Convert user preferences dict into a search query string.
+
+        If the user provided a free-text description, use it as the primary
+        query (natural language works better for vector search, BM25, and
+        cross-encoder). Structured fields are appended to enrich the query.
+        """
+        free_text = (preferences.get('free_text') or '').strip()
         parts = []
+        if free_text:
+            parts.append(free_text)
         if preferences.get('field'):
             parts.append(preferences['field'])
         if preferences.get('degree'):
@@ -301,24 +349,67 @@ class UniversityMatcher:
         """
         scores = {}
 
-        # BUDGET FIT (25%)
-        # Score = 1.0 if affordable, decreases as tuition exceeds budget
-        user_budget = preferences.get('budget', float('inf'))
+        # BUDGET FIT — compares against tuition (what users mean by "budget")
+        # Total cost (tuition + living) is shown separately as info
+        user_budget = preferences.get('budget', 0)
         tuition = university.get('tuition_fees', 0)
+        cost_to_compare = tuition if tuition else 0
+        free_text = (preferences.get('free_text') or '').lower()
 
-        if tuition <= user_budget:
+        # Detect budget intent from free text
+        budget_intent = 'neutral'  # 'cheap', 'expensive', or 'neutral'
+        cheap_keywords = ['affordable', 'cheap', 'low cost', 'low tuition', 'budget', 'inexpensive', 'economical']
+        expensive_keywords = ['expensive', 'premium', 'higher cost', 'high cost', 'top tier', 'prestigious', 'elite']
+        if any(kw in free_text for kw in cheap_keywords):
+            budget_intent = 'cheap'
+        elif any(kw in free_text for kw in expensive_keywords):
+            budget_intent = 'expensive'
+
+        if not user_budget and budget_intent == 'cheap':
+            # User wants affordable — lower total cost = higher score
+            if cost_to_compare <= 15000:
+                scores['budget'] = 1.0
+            elif cost_to_compare <= 25000:
+                scores['budget'] = 0.9
+            elif cost_to_compare <= 40000:
+                scores['budget'] = 0.7
+            elif cost_to_compare <= 55000:
+                scores['budget'] = 0.4
+            elif cost_to_compare <= 70000:
+                scores['budget'] = 0.15
+            else:
+                scores['budget'] = 0.0
+        elif not user_budget and budget_intent == 'expensive':
+            # User wants premium/expensive — higher cost = higher score
+            if cost_to_compare >= 80000:
+                scores['budget'] = 1.0
+            elif cost_to_compare >= 60000:
+                scores['budget'] = 0.8
+            elif cost_to_compare >= 40000:
+                scores['budget'] = 0.5
+            elif cost_to_compare >= 25000:
+                scores['budget'] = 0.3
+            else:
+                scores['budget'] = 0.1
+        elif not user_budget:
+            # No budget specified, no intent — neutral score
+            scores['budget'] = 0.5
+        elif cost_to_compare <= user_budget:
             scores['budget'] = 1.0  # Affordable = full score
         else:
-            # Partial score based on how much over budget
-            over_percentage = (tuition - user_budget) / user_budget
-            scores['budget'] = max(0, 1.0 - over_percentage)
+            # Penalize for going over budget (gradual)
+            over_percentage = (cost_to_compare - user_budget) / user_budget
+            scores['budget'] = max(0, 1.0 - (over_percentage * 2))
 
-        # GPA FIT (20%)
+        # GPA FIT (15%)
         # Score = 1.0 if qualified, partial if close
-        user_gpa = preferences.get('gpa', 4.0)
+        user_gpa = preferences.get('gpa', 0)
         required_gpa = university.get('gpa_requirement', 0)
 
-        if user_gpa >= required_gpa:
+        if not user_gpa:
+            # No GPA specified — neutral score
+            scores['gpa'] = 0.5
+        elif user_gpa >= required_gpa:
             scores['gpa'] = 1.0  # Qualified = full score
         else:
             # Partial score based on how close they are
@@ -388,37 +479,143 @@ class UniversityMatcher:
             # User provided a score but university has no requirement for that test
             scores['english'] = 0.7  # Slight positive — likely still qualifies
 
-        # SCHOLARSHIP AVAILABILITY (5%)
-        # Bonus if user prefers scholarships and the university offers them
+        # SCHOLARSHIP AVAILABILITY (5%) — uses max_coverage_percent when available
         user_wants_scholarship = preferences.get('prefer_scholarship', False)
         scholarship_info = str(university.get('scholarships', '')).lower()
+        max_coverage = university.get('max_coverage_percent', 0) or 0
+        if isinstance(max_coverage, str):
+            try:
+                max_coverage = float(max_coverage)
+            except (ValueError, TypeError):
+                max_coverage = 0
 
         has_scholarship = bool(scholarship_info and scholarship_info not in ('', 'none', 'n/a', 'not available', 'no'))
 
         if not user_wants_scholarship:
             # User doesn't care — neutral
             scores['scholarship'] = 0.5
+        elif max_coverage > 0:
+            # Use actual coverage percentage for precise scoring
+            if max_coverage >= 100:
+                scores['scholarship'] = 1.0   # Full funding
+            elif max_coverage >= 75:
+                scores['scholarship'] = 0.9
+            elif max_coverage >= 50:
+                scores['scholarship'] = 0.75
+            elif max_coverage >= 25:
+                scores['scholarship'] = 0.6
+            else:
+                scores['scholarship'] = 0.4
         elif has_scholarship:
-            # User wants scholarships and they exist
+            # Fallback to text-based scoring
             if 'full' in scholarship_info:
-                scores['scholarship'] = 1.0   # Full funding = best
+                scores['scholarship'] = 1.0
             elif 'merit' in scholarship_info or 'available' in scholarship_info:
                 scores['scholarship'] = 0.85
             elif 'limited' in scholarship_info or 'partial' in scholarship_info:
                 scores['scholarship'] = 0.6
             else:
-                scores['scholarship'] = 0.7   # Some scholarship info exists
+                scores['scholarship'] = 0.7
         else:
             # User wants scholarships but none available
             scores['scholarship'] = 0.1
 
+        # QS RANKING (15%)
+        # Higher-ranked universities get higher scores
+        qs_ranking = university.get('qs_ranking', 260)
+        try:
+            qs_ranking = int(qs_ranking) if qs_ranking else 260
+        except (ValueError, TypeError):
+            qs_ranking = 260
+
+        if qs_ranking <= 10:
+            scores['qs_ranking'] = 1.0
+        elif qs_ranking <= 25:
+            scores['qs_ranking'] = 0.9
+        elif qs_ranking <= 50:
+            scores['qs_ranking'] = 0.8
+        elif qs_ranking <= 100:
+            scores['qs_ranking'] = 0.65
+        elif qs_ranking <= 150:
+            scores['qs_ranking'] = 0.5
+        elif qs_ranking <= 200:
+            scores['qs_ranking'] = 0.35
+        else:
+            scores['qs_ranking'] = 0.2
+
+        # ACCEPTANCE RATE (8%) — realistic admission chances
+        acceptance_rate = university.get('acceptance_rate', 0) or 0
+        if isinstance(acceptance_rate, str):
+            try:
+                acceptance_rate = float(acceptance_rate)
+            except (ValueError, TypeError):
+                acceptance_rate = 0
+
+        user_gpa_for_acc = preferences.get('gpa', 0)
+        if not acceptance_rate:
+            scores['acceptance'] = 0.5  # No data — neutral
+        elif acceptance_rate >= 50:
+            scores['acceptance'] = 1.0  # Easy to get in
+        elif acceptance_rate >= 30:
+            scores['acceptance'] = 0.85
+        elif acceptance_rate >= 20:
+            # Moderate — boost if student has strong GPA
+            scores['acceptance'] = 0.75 if user_gpa_for_acc >= 3.5 else 0.6
+        elif acceptance_rate >= 10:
+            scores['acceptance'] = 0.6 if user_gpa_for_acc >= 3.7 else 0.4
+        else:
+            # Very competitive (<10%)
+            scores['acceptance'] = 0.5 if user_gpa_for_acc >= 3.8 else 0.25
+
+        # WORK VISA (4%) — important for international students
+        work_visa = university.get('work_visa_available', 0)
+        if isinstance(work_visa, str):
+            try:
+                work_visa = int(float(work_visa))
+            except (ValueError, TypeError):
+                work_visa = 0
+        scores['work_visa'] = 1.0 if work_visa else 0.3
+
+        # RESEARCH FIT (3%) — match research emphasis to student profile
+        research_weight = university.get('research_weight', 0) or 0
+        if isinstance(research_weight, str):
+            try:
+                research_weight = float(research_weight)
+            except (ValueError, TypeError):
+                research_weight = 0
+        # Higher research weight universities score better (good for grad students)
+        if research_weight >= 4:
+            scores['research'] = 1.0
+        elif research_weight >= 3:
+            scores['research'] = 0.8
+        elif research_weight >= 2:
+            scores['research'] = 0.6
+        else:
+            scores['research'] = 0.4
+
         # Calculate weighted total criteria score
+        # Boost budget weight when user has clear budget intent
+        budget_w = self.BUDGET_WEIGHT
+        qs_w = self.QS_RANKING_WEIGHT
+        if budget_intent == 'cheap':
+            # Boost budget weight, reduce QS ranking weight
+            budget_w = 0.24
+            qs_w = 0.04
+        elif budget_intent == 'expensive':
+            # Reduce budget weight, boost QS ranking
+            budget_w = 0.04
+            qs_w = 0.20
+
         scores['total_criteria'] = (
-            scores['budget'] * (self.BUDGET_WEIGHT / self.CRITERIA_WEIGHT) +
+            scores['budget'] * (budget_w / self.CRITERIA_WEIGHT) +
             scores['gpa'] * (self.GPA_WEIGHT / self.CRITERIA_WEIGHT) +
             scores['field'] * (self.FIELD_WEIGHT / self.CRITERIA_WEIGHT) +
             scores['english'] * (self.ENGLISH_WEIGHT / self.CRITERIA_WEIGHT) +
-            scores['scholarship'] * (self.SCHOLARSHIP_WEIGHT / self.CRITERIA_WEIGHT)
+            scores['scholarship'] * (self.SCHOLARSHIP_WEIGHT / self.CRITERIA_WEIGHT) +
+            scores['qs_ranking'] * (qs_w / self.CRITERIA_WEIGHT) +
+            scores['acceptance'] * (self.ACCEPTANCE_WEIGHT / self.CRITERIA_WEIGHT) +
+            scores['work_visa'] * (self.WORK_VISA_WEIGHT / self.CRITERIA_WEIGHT) +
+            scores['research'] * (self.RESEARCH_WEIGHT / self.CRITERIA_WEIGHT)
         )
 
         return scores
@@ -427,7 +624,7 @@ class UniversityMatcher:
         """Check if two fields are related."""
         # Define related field groups
         related_groups = [
-            {'computer science', 'software engineering', 'data science', 'artificial intelligence', 'machine learning', 'information technology', 'cs', 'it'},
+            {'computer science', 'software engineering', 'data science', 'artificial intelligence', 'machine learning', 'information technology', 'cs', 'cse', 'it'},
             {'business', 'mba', 'management', 'finance', 'marketing', 'economics'},
             {'engineering', 'mechanical', 'electrical', 'civil', 'chemical'},
             {'medicine', 'healthcare', 'nursing', 'public health', 'biomedical'},
@@ -449,18 +646,41 @@ class UniversityMatcher:
         reasons = []
 
         # Budget reason
-        if scores['budget'] >= 1.0:
-            reasons.append(f"Within your budget of ${preferences.get('budget', 0):,}")
+        user_budget = preferences.get('budget', 0)
+        tuition = university.get('tuition_fees', 0)
+        free_text = (preferences.get('free_text') or '').lower()
+        cheap_keywords = ['affordable', 'cheap', 'low cost', 'low tuition', 'budget', 'inexpensive']
+        expensive_keywords = ['expensive', 'premium', 'higher cost', 'high cost', 'top tier', 'prestigious']
+        if not user_budget and any(kw in free_text for kw in cheap_keywords):
+            if scores['budget'] >= 0.7:
+                reasons.append(f"Affordable tuition: ${tuition:,.0f}/year")
+            elif scores['budget'] >= 0.3:
+                reasons.append(f"Moderate tuition: ${tuition:,.0f}/year")
+            else:
+                reasons.append(f"Expensive: ${tuition:,.0f}/year (you wanted affordable)")
+        elif not user_budget and any(kw in free_text for kw in expensive_keywords):
+            if scores['budget'] >= 0.8:
+                reasons.append(f"Premium university: ${tuition:,.0f}/year")
+            else:
+                reasons.append(f"Lower tuition: ${tuition:,.0f}/year")
+        elif not user_budget:
+            reasons.append(f"Tuition: ${tuition:,.0f}/year" if tuition else "Tuition: Not specified")
+        elif scores['budget'] >= 1.0:
+            reasons.append(f"Within your budget of ${user_budget:,.0f}")
         elif scores['budget'] >= 0.7:
-            reasons.append(f"Slightly over budget (${university.get('tuition_fees', 0):,})")
+            reasons.append(f"Slightly over budget (${tuition:,.0f})")
         else:
-            reasons.append(f"Over budget (${university.get('tuition_fees', 0):,} vs ${preferences.get('budget', 0):,} budget)")
+            reasons.append(f"Over budget (${tuition:,.0f} vs ${user_budget:,.0f} budget)")
 
         # GPA reason
-        if scores['gpa'] >= 1.0:
-            reasons.append(f"You meet the GPA requirement ({university.get('gpa_requirement', 0)})")
+        user_gpa = preferences.get('gpa', 0)
+        required_gpa = university.get('gpa_requirement', 0)
+        if not user_gpa:
+            reasons.append(f"GPA required: {required_gpa}" if required_gpa else "GPA: Not specified")
+        elif scores['gpa'] >= 1.0:
+            reasons.append(f"You meet the GPA requirement ({required_gpa})")
         else:
-            reasons.append(f"GPA requirement is {university.get('gpa_requirement', 0)} (yours: {preferences.get('gpa', 0)})")
+            reasons.append(f"GPA requirement is {required_gpa} (yours: {user_gpa})")
 
         # Field reason
         if scores['field'] >= 0.9:
@@ -486,6 +706,31 @@ class UniversityMatcher:
             reasons.append(f"Scholarships: {scholarship_info}")
         elif preferences.get('prefer_scholarship') and scores.get('scholarship', 0.5) < 0.3:
             reasons.append("No scholarships available")
+
+        # QS Ranking reason
+        qs = scores.get('qs_ranking', 0.5)
+        qs_rank = university.get('qs_ranking', '')
+        if qs_rank:
+            if qs >= 0.9:
+                reasons.append(f"Top-ranked university (QS #{qs_rank})")
+            elif qs >= 0.7:
+                reasons.append(f"Highly ranked (QS #{qs_rank})")
+            else:
+                reasons.append(f"QS Ranking: #{qs_rank}")
+
+        # Acceptance rate reason
+        acc = university.get('acceptance_rate', 0)
+        if acc:
+            if scores.get('acceptance', 0.5) >= 0.85:
+                reasons.append(f"Good admission chances ({acc}% acceptance)")
+            elif scores.get('acceptance', 0.5) >= 0.6:
+                reasons.append(f"Moderate admission ({acc}% acceptance)")
+            elif scores.get('acceptance', 0.5) < 0.4:
+                reasons.append(f"Highly competitive ({acc}% acceptance)")
+
+        # Work visa reason
+        if university.get('work_visa_available'):
+            reasons.append("Post-study work visa available")
 
         return reasons
 

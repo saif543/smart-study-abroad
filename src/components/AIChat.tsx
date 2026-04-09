@@ -9,11 +9,28 @@ interface Message {
   timestamp: Date;
 }
 
-interface AIChatProps {
-  systemMessages: string[];
+interface RAGResult {
+  name: string;
+  country: string;
+  match_score: number;
+  tuition: string;
+  field: string;
+  degree: string;
+  gpa_required?: number;
+  ielts: number;
+  toefl: number;
+  scholarships: string;
+  qs_ranking: string;
+  reasons?: string[];
+  [key: string]: unknown;
 }
 
-export default function AIChat({ systemMessages }: AIChatProps) {
+interface AIChatProps {
+  systemMessages: string[];
+  ragResults?: RAGResult[];
+}
+
+export default function AIChat({ systemMessages, ragResults }: AIChatProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -59,10 +76,23 @@ export default function AIChat({ systemMessages }: AIChatProps) {
     setLoading(true);
 
     try {
+      // Build conversation history for multi-turn context
+      // We send prior messages so the LLM remembers the conversation
+      const history = messages
+        .filter(m => m.sender === 'user' || m.sender === 'ai')
+        .map(m => ({
+          role: m.sender === 'user' ? 'user' : 'assistant',
+          content: m.text,
+        }));
+
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: input }),
+        body: JSON.stringify({
+          message: input,
+          history,
+          rag_context: ragResults && ragResults.length > 0 ? ragResults : null,
+        }),
       });
 
       const data = await response.json();
@@ -133,10 +163,10 @@ export default function AIChat({ systemMessages }: AIChatProps) {
                 <p className="text-slate-500 mb-6">I can help you with:</p>
                 <div className="grid grid-cols-2 gap-3 max-w-xs mx-auto">
                   {[
-                    { icon: '🏛️', text: 'Finding universities' },
-                    { icon: '📋', text: 'Admission requirements' },
-                    { icon: '📅', text: 'Application deadlines' },
-                    { icon: '🎓', text: 'Scholarships info' },
+                    { icon: '🏛️', text: 'University advice' },
+                    { icon: '📋', text: 'Admission help' },
+                    { icon: '🎯', text: 'Explain search results' },
+                    { icon: '📈', text: 'How to improve' },
                   ].map((item, i) => (
                     <div key={i} className="p-3 rounded-xl bg-white border border-slate-100 shadow-sm">
                       <span className="text-xl block mb-1">{item.icon}</span>
@@ -219,7 +249,7 @@ export default function AIChat({ systemMessages }: AIChatProps) {
               </button>
             </div>
             <p className="text-center text-xs text-slate-400 mt-3">
-              Powered by AI • Ask about universities, requirements & more
+              Powered by Mistral 7B (Local) • Ask about universities & your search results
             </p>
           </div>
         </div>

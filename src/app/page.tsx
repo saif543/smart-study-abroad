@@ -3,15 +3,21 @@
 import { useState } from 'react';
 import Navbar from '@/components/Navbar';
 import SearchTab from '@/components/SearchTab';
-import FindForMeTab from '@/components/FindForMeTab';
+import FindForMeTab, { MatchedUniversity } from '@/components/FindForMeTab';
+import AdmissionPredictor from '@/components/AdmissionPredictor';
 import AIChat from '@/components/AIChat';
 
 export default function Home() {
-  const [currentTool, setCurrentTool] = useState<'search' | 'findme'>('search');
+  const [currentTool, setCurrentTool] = useState<'search' | 'findme' | 'predict'>('search');
   const [aiMessages, setAiMessages] = useState<string[]>([]);
+  const [ragResults, setRagResults] = useState<MatchedUniversity[]>([]);
 
   const handleAIMessage = (message: string) => {
     setAiMessages(prev => [...prev, message]);
+  };
+
+  const handleRAGResults = (results: MatchedUniversity[]) => {
+    setRagResults(results);
   };
 
   return (
@@ -59,7 +65,7 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="grid md:grid-cols-2 gap-6 max-w-3xl mx-auto slide-up">
+          <div className="grid md:grid-cols-3 gap-6 max-w-5xl mx-auto slide-up">
             <button
               onClick={() => setCurrentTool('search')}
               className={`p-8 rounded-2xl text-left transition-all card-hover ${
@@ -97,6 +103,25 @@ export default function Home() {
                 Let AI find universities matching your profile.
               </p>
             </button>
+
+            <button
+              onClick={() => setCurrentTool('predict')}
+              className={`p-8 rounded-2xl text-left transition-all card-hover ${
+                currentTool === 'predict'
+                  ? 'bg-gradient-to-br from-teal-500 to-cyan-600 text-white shadow-2xl shadow-teal-500/25'
+                  : 'bg-white text-slate-800 shadow-lg hover:shadow-xl'
+              }`}
+            >
+              <div className={`w-14 h-14 rounded-xl flex items-center justify-center text-2xl mb-4 ${
+                currentTool === 'predict' ? 'bg-white/20' : 'bg-teal-100'
+              }`}>
+                📊
+              </div>
+              <h3 className="text-xl font-bold mb-2">Predict Admission</h3>
+              <p className={currentTool === 'predict' ? 'text-white/80' : 'text-slate-500'}>
+                ML model predicts your admission chances.
+              </p>
+            </button>
           </div>
         </div>
       </section>
@@ -104,10 +129,14 @@ export default function Home() {
       <section className="relative px-4 pb-20">
         <div className="max-w-4xl mx-auto">
           <div className="scale-in">
-            {currentTool === 'search' ? (
+            {currentTool === 'search' && (
               <SearchTab onAIMessage={handleAIMessage} />
-            ) : (
-              <FindForMeTab onAIMessage={handleAIMessage} />
+            )}
+            {currentTool === 'findme' && (
+              <FindForMeTab onAIMessage={handleAIMessage} onRAGResults={handleRAGResults} />
+            )}
+            {currentTool === 'predict' && (
+              <AdmissionPredictor onAIMessage={handleAIMessage} />
             )}
           </div>
         </div>
@@ -138,7 +167,7 @@ export default function Home() {
         </div>
       </section>
 
-      <AIChat systemMessages={aiMessages} />
+      <AIChat systemMessages={aiMessages} ragResults={ragResults} />
 
       <footer className="bg-slate-900 text-white py-12">
         <div className="max-w-6xl mx-auto px-4 text-center">

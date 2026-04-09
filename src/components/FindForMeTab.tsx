@@ -1,6 +1,7 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
+import CostCalculator from './CostCalculator';
 
 interface Requirements {
   degree: string;
@@ -11,34 +12,47 @@ interface Requirements {
   englishScore: string;
   country: string;
   preferScholarship: boolean;
+  freeText: string;
+  // ML fields
+  researchExp: string;
+  ecaLevel: string;
+  gre: string;
+  sat: string;
 }
 
-// Updated interface to match RAG response
-interface ScoreBreakdown {
-  semantic_similarity: number;
-  budget_fit: number;
-  gpa_fit: number;
-  field_match: number;
-}
-
-interface MatchedUniversity {
+export interface MatchedUniversity {
   name: string;
   country: string;
-  match_score: number;
+  match_score: number;  // ML admission probability (0-100)
   tuition: string;
   field: string;
   degree: string;
-  gpa_required: number;
-  score_breakdown: ScoreBreakdown;
-  reasons: string[];
-  why_matched: string;
+  ielts: number;
+  toefl: number;
+  scholarships: string;
+  deadline_fall: string;
+  deadline_spring: string;
+  test_requirements: string;
+  program_duration: string;
+  english_requirements: string;
+  qs_ranking: string;
+  living_cost: number;
+  total_cost_estimated: number;
+  max_coverage_percent: number;
+  work_visa_available: number;
+  research_weight: number;
+  eca_weight: number;
+  research_focus: string;
+  programs_offered: string;
+  [key: string]: unknown;
 }
 
 interface FindForMeTabProps {
   onAIMessage: (message: string) => void;
+  onRAGResults?: (results: MatchedUniversity[]) => void;
 }
 
-export default function FindForMeTab({ onAIMessage }: FindForMeTabProps) {
+export default function FindForMeTab({ onAIMessage, onRAGResults }: FindForMeTabProps) {
   const [requirements, setRequirements] = useState<Requirements>({
     degree: 'Master',
     field: '',
@@ -48,10 +62,110 @@ export default function FindForMeTab({ onAIMessage }: FindForMeTabProps) {
     englishScore: '',
     country: 'USA',
     preferScholarship: false,
+    freeText: '',
+    researchExp: '0',
+    ecaLevel: '0',
+    gre: '',
+    sat: '',
   });
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<MatchedUniversity[]>([]);
   const [totalInDatabase, setTotalInDatabase] = useState(0);
+  const [expandedCard, setExpandedCard] = useState<number | null>(null);
+  const [chatMessages, setChatMessages] = useState<{id: string; text: string; sender: 'user' | 'ai'; timestamp: Date}[]>([]);
+  const [chatInput, setChatInput] = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [chatContext, setChatContext] = useState<any>(null);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  const [costCard, setCostCard] = useState<MatchedUniversity | null>(null);
+  const [mlBase, setMlBase] = useState<{ probability: number; confidence: string; recommendation: string } | null>(null);
+  const [categoryCounts, setCategoryCounts] = useState<{ safe: number; moderate: number; risky: number } | null>(null);
+  const [improvements, setImprovements] = useState<{ action: string; impact: string }[]>([]);
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatMessages]);
+
+  const handleChatSend = async (messageText?: string) => {
+    const text = messageText || chatInput.trim();
+    if (!text || chatLoading) return;
+
+    const userMsg = { id: Date.now().toString(), text, sender: 'user' as const, timestamp: new Date() };
+    setChatMessages(prev => [...prev, userMsg]);
+    setChatInput('');
+    setChatLoading(true);
+
+    // Create a placeholder AI message that we'll stream into
+    const aiMsgId = (Date.now() + 1).toString();
+    setChatMessages(prev => [...prev, { id: aiMsgId, text: '', sender: 'ai' as const, timestamp: new Date() }]);
+
+    try {
+      const history = chatMessages.map(m => ({
+        role: m.sender === 'user' ? 'user' : 'assistant',
+        content: m.text,
+      }));
+
+      const response = await fetch('/api/chat/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: text,
+          history,
+          rag_context: chatContext || results,
+        }),
+      });
+
+      if (!response.body) throw new Error('No response body');
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let accumulated = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split('\n');
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (data.token) {
+                accumulated += data.token;
+                // Update the AI message in-place with accumulated text
+                setChatMessages(prev =>
+                  prev.map(m => m.id === aiMsgId ? { ...m, text: accumulated } : m)
+                );
+              }
+              if (data.done) break;
+              if (data.error) {
+                accumulated += data.error;
+                setChatMessages(prev =>
+                  prev.map(m => m.id === aiMsgId ? { ...m, text: accumulated } : m)
+                );
+              }
+            } catch { /* skip malformed SSE lines */ }
+          }
+        }
+      }
+
+      // If no text was streamed, show fallback
+      if (!accumulated) {
+        setChatMessages(prev =>
+          prev.map(m => m.id === aiMsgId ? { ...m, text: 'No response received. Is Ollama running?' } : m)
+        );
+      }
+    } catch {
+      setChatMessages(prev =>
+        prev.map(m => m.id === aiMsgId ? { ...m, text: 'Failed to get a response. Is the backend running?' } : m)
+      );
+    } finally {
+      setChatLoading(false);
+    }
+  };
 
   const handleChange = (field: keyof Requirements, value: string | boolean) => {
     setRequirements(prev => ({ ...prev, [field]: value }));
@@ -64,15 +178,18 @@ export default function FindForMeTab({ onAIMessage }: FindForMeTabProps) {
     }
 
     setLoading(true);
-    onAIMessage('RAG is searching your local database...');
+    setChatMessages([]);
+    setChatInput('');
+    onAIMessage('ML scoring all universities + RAG enriching details...');
 
     try {
+      // Single call: ML scores all 232 universities → RAG enriches top results
       const response = await fetch('/api/findme', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...requirements,
-          top_k: 5  // Get top 5 matches
+          top_k: 5
         }),
       });
 
@@ -81,7 +198,25 @@ export default function FindForMeTab({ onAIMessage }: FindForMeTabProps) {
       if (data.universities) {
         setResults(data.universities);
         setTotalInDatabase(data.total_in_database || 0);
-        onAIMessage(`Found ${data.universities.length} best matches from ${data.total_in_database} universities! (RAG - Local Search)`);
+        setChatContext(data.chat_context || data.universities);
+        setCategoryCounts(data.category_counts || null);
+        setImprovements(data.improvements || []);
+
+        // Set ML base prediction
+        if (data.ml_prediction) {
+          setMlBase({
+            probability: data.ml_prediction.ml_probability || 0,
+            confidence: data.ml_prediction.confidence || '',
+            recommendation: data.recommendation || '',
+          });
+        } else {
+          setMlBase(null);
+        }
+
+        const cc = data.category_counts;
+        const countMsg = cc ? ` (Safe: ${cc.safe}, Moderate: ${cc.moderate}, Risky: ${cc.risky})` : '';
+        onAIMessage(`ML ranked ${data.total_in_database} universities${countMsg} — showing top ${data.universities.length} with RAG details`);
+        onRAGResults?.(data.universities);
       } else {
         onAIMessage(data.error || 'No universities found');
         setResults([]);
@@ -95,454 +230,535 @@ export default function FindForMeTab({ onAIMessage }: FindForMeTabProps) {
   };
 
   const countries = [
-    { code: 'USA', name: 'United States', flag: '🇺🇸' },
-    { code: 'UK', name: 'United Kingdom', flag: '🇬🇧' },
+    { code: 'USA', name: 'USA', flag: '🇺🇸' },
+    { code: 'UK', name: 'UK', flag: '🇬🇧' },
     { code: 'Canada', name: 'Canada', flag: '🇨🇦' },
     { code: 'Australia', name: 'Australia', flag: '🇦🇺' },
     { code: 'Germany', name: 'Germany', flag: '🇩🇪' },
-    { code: 'Any', name: 'Any Country', flag: '🌍' },
+    { code: 'Any', name: 'Any', flag: '🌍' },
   ];
 
-  // Get color for score
   const getScoreColor = (score: number) => {
-    if (score >= 90) return 'from-emerald-500 to-teal-500';
-    if (score >= 75) return 'from-blue-500 to-indigo-500';
-    if (score >= 60) return 'from-amber-500 to-orange-500';
-    return 'from-slate-400 to-slate-500';
+    if (score >= 80) return 'text-emerald-600';
+    if (score >= 60) return 'text-blue-600';
+    if (score >= 40) return 'text-amber-600';
+    return 'text-slate-500';
   };
 
-  const getScoreBgColor = (score: number) => {
-    if (score >= 90) return 'bg-emerald-500';
-    if (score >= 75) return 'bg-blue-500';
-    if (score >= 60) return 'bg-amber-500';
+  const getScoreBg = (score: number) => {
+    if (score >= 80) return 'bg-emerald-500';
+    if (score >= 60) return 'bg-blue-500';
+    if (score >= 40) return 'bg-amber-500';
     return 'bg-slate-400';
   };
 
+  const getCategoryColor = (cat: string) => {
+    if (cat === 'Safe') return 'bg-emerald-100 text-emerald-700';
+    if (cat === 'Moderate') return 'bg-amber-100 text-amber-700';
+    return 'bg-red-100 text-red-700';
+  };
+
+  const getScoreRing = (score: number) => {
+    if (score >= 80) return 'ring-emerald-200 bg-emerald-50';
+    if (score >= 60) return 'ring-blue-200 bg-blue-50';
+    if (score >= 40) return 'ring-amber-200 bg-amber-50';
+    return 'ring-slate-200 bg-slate-50';
+  };
+
   return (
-    <div className="space-y-8 slide-up">
-      {/* Requirements Form Card */}
-      <div className="relative overflow-hidden bg-white rounded-3xl shadow-xl border border-slate-100">
-        {/* Decorative gradient bar */}
-        <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-cyan-500 via-purple-500 to-pink-500" />
+    <div className="space-y-6 slide-up">
+      {/* Search Form */}
+      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+        <h2 className="text-lg font-bold text-slate-800 mb-5">Find Universities For Me</h2>
 
-        <div className="p-8">
-          {/* Header */}
-          <div className="flex items-center gap-4 mb-6">
-            <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-cyan-500 to-purple-500 flex items-center justify-center text-2xl shadow-lg">
-              🎯
-            </div>
-            <div>
-              <h2 className="text-2xl font-bold text-slate-800">Find Universities For Me</h2>
-              <p className="text-slate-500">RAG-powered smart matching from your local database</p>
-            </div>
+        {/* Optional free text */}
+        <textarea
+          value={requirements.freeText}
+          onChange={(e) => handleChange('freeText', e.target.value)}
+          placeholder="Describe what you're looking for (optional)..."
+          rows={2}
+          className="w-full px-4 py-2.5 rounded-lg border border-slate-200 focus:border-purple-500 focus:ring-1 focus:ring-purple-500/20 outline-none text-sm text-slate-800 placeholder:text-slate-400 resize-none mb-5"
+        />
+
+        {/* Main inputs - 2 rows */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">Degree</label>
+            <select value={requirements.degree} onChange={(e) => handleChange('degree', e.target.value)}
+              className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white text-slate-800 focus:border-purple-500 outline-none">
+              <option value="Master">Master&apos;s</option>
+              <option value="PhD">PhD / Research</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">Field of Study</label>
+            <select value={requirements.field} onChange={(e) => handleChange('field', e.target.value)}
+              className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white text-slate-800 focus:border-purple-500 outline-none">
+              <option value="">Select a field...</option>
+              <option value="Computer Science">Computer Science</option>
+              <option value="Engineering">Engineering</option>
+              <option value="Business">Business</option>
+              <option value="Medicine">Medicine</option>
+              <option value="Sciences">Sciences</option>
+              <option value="Law">Law</option>
+              <option value="Economics">Economics</option>
+              <option value="Mathematics">Mathematics</option>
+              <option value="Physics">Physics</option>
+              <option value="Biology">Biology</option>
+              <option value="Chemistry">Chemistry</option>
+              <option value="Social Sciences">Social Sciences</option>
+              <option value="Humanities">Humanities</option>
+              <option value="Arts And Humanities">Arts &amp; Humanities</option>
+              <option value="Education">Education</option>
+              <option value="Environmental Science">Environmental Science</option>
+              <option value="Public Health">Public Health</option>
+              <option value="Architecture">Architecture</option>
+              <option value="Agriculture">Agriculture</option>
+              <option value="Informatics">Informatics</option>
+              <option value="Biotech">Biotech</option>
+              <option value="Robotics">Robotics</option>
+              <option value="Management">Management</option>
+              <option value="Design">Design</option>
+              <option value="Journalism">Journalism</option>
+              <option value="International Relations">International Relations</option>
+              <option value="Public Policy">Public Policy</option>
+              <option value="Materials Science">Materials Science</option>
+              <option value="Marine Sciences">Marine Sciences</option>
+              <option value="Film And Media">Film &amp; Media</option>
+              <option value="Game Design">Game Design</option>
+              <option value="Tourism">Tourism</option>
+              <option value="Hotel Management">Hotel Management</option>
+              <option value="Energy">Energy</option>
+              <option value="Astronomy">Astronomy</option>
+              <option value="Computing">Computing</option>
+              <option value="Politics">Politics</option>
+              <option value="Arts">Arts</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">Your GPA</label>
+            <input type="text" value={requirements.minGPA} onChange={(e) => handleChange('minGPA', e.target.value)}
+              placeholder="e.g., 3.5"
+              className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm text-slate-800 placeholder:text-slate-400 focus:border-purple-500 outline-none" />
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">Max Budget ($/year)</label>
+            <input type="text" value={requirements.maxTuition} onChange={(e) => handleChange('maxTuition', e.target.value)}
+              placeholder="e.g., 50000"
+              className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm text-slate-800 placeholder:text-slate-400 focus:border-purple-500 outline-none" />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">English Test</label>
+            <select value={requirements.englishTest} onChange={(e) => { handleChange('englishTest', e.target.value); handleChange('englishScore', ''); }}
+              className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white text-slate-800 focus:border-purple-500 outline-none">
+              <option value="TOEFL">TOEFL</option>
+              <option value="IELTS">IELTS</option>
+              <option value="None">No Test</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">Score</label>
+            {requirements.englishTest === 'IELTS' ? (
+              <select value={requirements.englishScore} onChange={(e) => handleChange('englishScore', e.target.value)}
+                className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white text-slate-800 focus:border-purple-500 outline-none">
+                <option value="">Select</option>
+                {['9.0','8.5','8.0','7.5','7.0','6.5','6.0','5.5','5.0'].map(s => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
+            ) : requirements.englishTest === 'None' ? (
+              <div className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-slate-400 text-sm">N/A</div>
+            ) : (
+              <input type="number" value={requirements.englishScore} onChange={(e) => handleChange('englishScore', e.target.value)}
+                placeholder="0-120" min={0} max={120}
+                className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm text-slate-800 placeholder:text-slate-400 focus:border-purple-500 outline-none" />
+            )}
+          </div>
+          <div className="col-span-2 flex items-end">
+            <label className="flex items-center gap-2 cursor-pointer text-sm text-slate-600">
+              <input type="checkbox" checked={requirements.preferScholarship}
+                onChange={(e) => handleChange('preferScholarship', e.target.checked)}
+                className="w-4 h-4 rounded border-slate-300 text-purple-500" />
+              Prefer scholarships
+            </label>
+          </div>
+        </div>
+
+        {/* ML profile fields */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">Research Experience</label>
+            <select value={requirements.researchExp} onChange={(e) => handleChange('researchExp', e.target.value)}
+              className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white text-slate-800 focus:border-purple-500 outline-none">
+              <option value="0">No</option>
+              <option value="1">Yes</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">Extracurricular Level</label>
+            <select value={requirements.ecaLevel} onChange={(e) => handleChange('ecaLevel', e.target.value)}
+              className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white text-slate-800 focus:border-purple-500 outline-none">
+              <option value="0">0 - None</option>
+              <option value="1">1 - Minimal</option>
+              <option value="2">2 - Some</option>
+              <option value="3">3 - Active</option>
+              <option value="4">4 - Strong</option>
+              <option value="5">5 - Exceptional</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">GRE Score (optional)</label>
+            <input type="number" value={requirements.gre} onChange={(e) => handleChange('gre', e.target.value)}
+              placeholder="0-340" min={0} max={340}
+              className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm text-slate-800 placeholder:text-slate-400 focus:border-purple-500 outline-none" />
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">SAT Score (optional)</label>
+            <input type="number" value={requirements.sat} onChange={(e) => handleChange('sat', e.target.value)}
+              placeholder="0-1600" min={0} max={1600}
+              className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm text-slate-800 placeholder:text-slate-400 focus:border-purple-500 outline-none" />
+          </div>
+        </div>
+
+        {/* Country pills */}
+        <div className="flex flex-wrap gap-2 mb-5">
+          {countries.map((c) => (
+            <button key={c.code} type="button" onClick={() => handleChange('country', c.code)}
+              className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all ${
+                requirements.country === c.code
+                  ? 'bg-purple-500 text-white'
+                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              }`}>
+              {c.flag} {c.name}
+            </button>
+          ))}
+        </div>
+
+        {/* Search button */}
+        <button onClick={handleFind} disabled={loading}
+          className="w-full py-3 rounded-xl bg-purple-600 text-white font-semibold text-sm hover:bg-purple-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2">
+          {loading ? (
+            <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> ML Scoring + RAG Enriching...</>
+          ) : 'Find Best Matches (ML + RAG)'}
+        </button>
+      </div>
+
+      {/* Results */}
+      {results.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-baseline gap-2 px-1">
+            <h3 className="text-base font-bold text-slate-800">Top {results.length} Matches</h3>
+            <span className="text-xs text-slate-400">from {totalInDatabase} universities</span>
           </div>
 
-          {/* RAG Info Card */}
-          <div className="mb-8 p-4 rounded-2xl bg-gradient-to-r from-cyan-50 via-purple-50 to-pink-50 border border-purple-100">
-            <div className="flex items-center gap-3">
-              <span className="text-2xl">🚀</span>
-              <div>
-                <p className="font-semibold text-purple-700">Powered by RAG (Retrieval Augmented Generation)</p>
-                <p className="text-slate-600 text-sm">
-                  Searches 100 universities locally using AI embeddings. Fast, free, works offline!
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div className="space-y-6">
-            {/* Row 1: Degree and Field */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-2 flex items-center gap-2">
-                  <span className="w-6 h-6 rounded-lg bg-purple-100 flex items-center justify-center text-sm">📚</span>
-                  Degree Level
-                </label>
-                <select
-                  value={requirements.degree}
-                  onChange={(e) => handleChange('degree', e.target.value)}
-                  className="w-full px-5 py-4 rounded-2xl border-2 border-slate-200 focus:border-purple-500 focus:ring-4 focus:ring-purple-500/10 transition-all outline-none bg-white text-slate-800 cursor-pointer"
-                >
-                  <option value="Bachelor">Bachelor&apos;s Degree</option>
-                  <option value="Master">Master&apos;s Degree</option>
-                  <option value="PhD">PhD / Doctorate</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-2 flex items-center gap-2">
-                  <span className="w-6 h-6 rounded-lg bg-cyan-100 flex items-center justify-center text-sm">🎓</span>
-                  Field of Study
-                </label>
-                <input
-                  type="text"
-                  value={requirements.field}
-                  onChange={(e) => handleChange('field', e.target.value)}
-                  placeholder="e.g., Computer Science, MBA"
-                  className="w-full px-5 py-4 rounded-2xl border-2 border-slate-200 focus:border-purple-500 focus:ring-4 focus:ring-purple-500/10 transition-all outline-none text-slate-800 placeholder:text-slate-400"
-                />
-              </div>
-            </div>
-
-            {/* Row 2: Budget and GPA */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-2 flex items-center gap-2">
-                  <span className="w-6 h-6 rounded-lg bg-green-100 flex items-center justify-center text-sm">💰</span>
-                  Maximum Tuition (per year)
-                </label>
-                <div className="relative">
-                  <span className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-400 font-semibold">$</span>
-                  <input
-                    type="text"
-                    value={requirements.maxTuition}
-                    onChange={(e) => handleChange('maxTuition', e.target.value)}
-                    placeholder="50,000"
-                    className="w-full pl-10 pr-5 py-4 rounded-2xl border-2 border-slate-200 focus:border-purple-500 focus:ring-4 focus:ring-purple-500/10 transition-all outline-none text-slate-800 placeholder:text-slate-400"
-                  />
+          {/* ML Profile Summary + Category Breakdown */}
+          {mlBase && mlBase.probability > 0 && (
+            <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-3">
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">ML Profile Strength</p>
+              <div className="flex items-center gap-4">
+                <div className="flex-1">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-sm font-bold text-slate-800">Overall Admission Chance</span>
+                    <span className={`text-sm font-bold ${getScoreColor(mlBase.probability)}`}>{Math.round(mlBase.probability)}%</span>
+                  </div>
+                  <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                    <div className={`h-full rounded-full ${getScoreBg(mlBase.probability)}`} style={{ width: `${mlBase.probability}%` }} />
+                  </div>
+                  <p className="text-xs text-slate-500 mt-2">{mlBase.recommendation}</p>
                 </div>
               </div>
-              <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-2 flex items-center gap-2">
-                  <span className="w-6 h-6 rounded-lg bg-amber-100 flex items-center justify-center text-sm">📊</span>
-                  Your GPA
-                </label>
-                <input
-                  type="text"
-                  value={requirements.minGPA}
-                  onChange={(e) => handleChange('minGPA', e.target.value)}
-                  placeholder="e.g., 3.5 out of 4.0"
-                  className="w-full px-5 py-4 rounded-2xl border-2 border-slate-200 focus:border-purple-500 focus:ring-4 focus:ring-purple-500/10 transition-all outline-none text-slate-800 placeholder:text-slate-400"
-                />
-              </div>
-            </div>
 
-            {/* Row 3: English Test and Score */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-2 flex items-center gap-2">
-                  <span className="w-6 h-6 rounded-lg bg-blue-100 flex items-center justify-center text-sm">📝</span>
-                  English Test
-                </label>
-                <select
-                  value={requirements.englishTest}
-                  onChange={(e) => {
-                    handleChange('englishTest', e.target.value);
-                    handleChange('englishScore', ''); // Reset score when test changes
-                  }}
-                  className="w-full px-5 py-4 rounded-2xl border-2 border-slate-200 focus:border-purple-500 focus:ring-4 focus:ring-purple-500/10 transition-all outline-none bg-white text-slate-800 cursor-pointer"
-                >
-                  <option value="TOEFL">TOEFL iBT (0-120)</option>
-                  <option value="IELTS">IELTS Academic (0-9)</option>
-                  <option value="Duolingo">Duolingo English Test (10-160)</option>
-                  <option value="None">No Test Yet</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-2 flex items-center gap-2">
-                  <span className="w-6 h-6 rounded-lg bg-indigo-100 flex items-center justify-center text-sm">📈</span>
-                  Your {requirements.englishTest === 'None' ? 'Score' : requirements.englishTest} Score
-                </label>
-                {requirements.englishTest === 'IELTS' ? (
-                  <select
-                    value={requirements.englishScore}
-                    onChange={(e) => handleChange('englishScore', e.target.value)}
-                    className="w-full px-5 py-4 rounded-2xl border-2 border-slate-200 focus:border-purple-500 focus:ring-4 focus:ring-purple-500/10 transition-all outline-none bg-white text-slate-800 cursor-pointer"
-                  >
-                    <option value="">Select IELTS Band</option>
-                    <option value="9.0">9.0 - Expert</option>
-                    <option value="8.5">8.5</option>
-                    <option value="8.0">8.0 - Very Good</option>
-                    <option value="7.5">7.5</option>
-                    <option value="7.0">7.0 - Good</option>
-                    <option value="6.5">6.5</option>
-                    <option value="6.0">6.0 - Competent</option>
-                    <option value="5.5">5.5</option>
-                    <option value="5.0">5.0 - Modest</option>
-                    <option value="4.5">4.5</option>
-                    <option value="4.0">4.0 - Limited</option>
-                  </select>
-                ) : requirements.englishTest === 'None' ? (
-                  <div className="w-full px-5 py-4 rounded-2xl border-2 border-slate-200 bg-slate-50 text-slate-400">
-                    No test selected
+              {/* Category counts */}
+              {categoryCounts && (
+                <div className="flex gap-3 pt-2 border-t border-slate-100">
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                    <span className="text-xs text-slate-600">Safe: <strong>{categoryCounts.safe}</strong></span>
                   </div>
-                ) : (
-                  <div className="relative">
-                    <input
-                      type="number"
-                      value={requirements.englishScore}
-                      onChange={(e) => handleChange('englishScore', e.target.value)}
-                      placeholder={requirements.englishTest === 'TOEFL' ? '0-120' : '10-160'}
-                      min={requirements.englishTest === 'TOEFL' ? 0 : 10}
-                      max={requirements.englishTest === 'TOEFL' ? 120 : 160}
-                      className="w-full px-5 py-4 rounded-2xl border-2 border-slate-200 focus:border-purple-500 focus:ring-4 focus:ring-purple-500/10 transition-all outline-none text-slate-800 placeholder:text-slate-400"
-                    />
-                    <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 text-sm">
-                      {requirements.englishTest === 'TOEFL' ? '/ 120' : '/ 160'}
-                    </span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-amber-500" />
+                    <span className="text-xs text-slate-600">Moderate: <strong>{categoryCounts.moderate}</strong></span>
                   </div>
-                )}
-                {requirements.englishTest !== 'None' && requirements.englishTest !== 'IELTS' && (
-                  <p className="mt-1 text-xs text-slate-500">
-                    {requirements.englishTest === 'TOEFL'
-                      ? 'Most universities require 80-100+'
-                      : 'Most universities require 105-120+'}
-                  </p>
-                )}
-              </div>
-            </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-red-500" />
+                    <span className="text-xs text-slate-600">Risky: <strong>{categoryCounts.risky}</strong></span>
+                  </div>
+                </div>
+              )}
 
-            {/* Country Selection */}
-            <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-3 flex items-center gap-2">
-                <span className="w-6 h-6 rounded-lg bg-rose-100 flex items-center justify-center text-sm">🌍</span>
-                Preferred Country
-              </label>
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                {countries.map((country) => (
-                  <button
-                    key={country.code}
-                    type="button"
-                    onClick={() => handleChange('country', country.code)}
-                    className={`p-4 rounded-2xl border-2 transition-all flex items-center gap-3 ${
-                      requirements.country === country.code
-                        ? 'border-purple-500 bg-purple-50 shadow-lg shadow-purple-500/20'
-                        : 'border-slate-200 hover:border-purple-300 hover:bg-purple-50/50'
-                    }`}
-                  >
-                    <span className="text-2xl">{country.flag}</span>
-                    <span className={`font-medium ${requirements.country === country.code ? 'text-purple-700' : 'text-slate-700'}`}>
-                      {country.name}
-                    </span>
+              {/* Improvement suggestions */}
+              {improvements.length > 0 && (
+                <div className="pt-2 border-t border-slate-100 space-y-1.5">
+                  <span className="text-[11px] text-slate-500 font-medium">Improvement Tips</span>
+                  {improvements.map((imp, i) => (
+                    <div key={i} className="flex items-start gap-1.5">
+                      <span className="text-blue-500 text-xs mt-0.5">+</span>
+                      <span className="text-[11px] text-slate-600"><strong>{imp.action}</strong> — {imp.impact}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {results.map((uni, index) => {
+            const gaps = (uni as Record<string, unknown>).gap_analysis as { factor: string; status: string; detail: string }[] || [];
+            const category = (uni as Record<string, unknown>).category as string || '';
+            return (
+            <div key={index} className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+              {/* Main card */}
+              <div className="p-5">
+                <div className="flex items-start gap-4">
+                  {/* ML admission score */}
+                  <div className={`w-14 h-14 rounded-full ring-2 flex-shrink-0 flex flex-col items-center justify-center ${getScoreRing(uni.match_score)}`}>
+                    <span className={`text-lg font-bold leading-none ${getScoreColor(uni.match_score)}`}>{Math.round(uni.match_score)}</span>
+                    <span className="text-[9px] text-slate-400">%</span>
+                  </div>
+
+                  {/* Info */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <h4 className="font-bold text-slate-800 text-[15px] leading-tight">{uni.name}</h4>
+                        <p className="text-xs text-slate-500 mt-0.5">{uni.field} &middot; {uni.degree} &middot; {uni.country}</p>
+                      </div>
+                      <div className="flex gap-1.5 flex-shrink-0">
+                        {category && (
+                          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded ${getCategoryColor(category)}`}>{category}</span>
+                        )}
+                        {uni.qs_ranking && (
+                          <span className="text-[10px] font-medium text-slate-500 bg-slate-100 px-2 py-0.5 rounded">QS #{uni.qs_ranking}</span>
+                        )}
+                        {Boolean((uni as Record<string, unknown>).rag_enriched) && (
+                          <span className="text-[10px] font-medium text-blue-500 bg-blue-50 px-2 py-0.5 rounded">RAG</span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Key stats */}
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 mt-3 text-xs">
+                      <span className="text-slate-700 font-medium">{uni.tuition}</span>
+                      {(uni as Record<string, unknown>).acceptance_rate != null && Number((uni as Record<string, unknown>).acceptance_rate) > 0 && (
+                        <span className="text-slate-600">{String((uni as Record<string, unknown>).acceptance_rate)}% acceptance</span>
+                      )}
+                      {(uni as Record<string, unknown>).min_gpa != null && Number((uni as Record<string, unknown>).min_gpa) > 0 && (
+                        <span className="text-slate-600">GPA {String((uni as Record<string, unknown>).min_gpa)}</span>
+                      )}
+                      {uni.ielts > 0 && (
+                        <span className="text-slate-600">IELTS {uni.ielts}</span>
+                      )}
+                      {Number(uni.work_visa_available) === 1 && (
+                        <span className="text-emerald-600 font-medium">Work Visa</span>
+                      )}
+                      {(uni as Record<string, unknown>).is_preferred === 1 && (
+                        <span className="text-purple-600 font-medium">Preferred Country</span>
+                      )}
+                    </div>
+
+                    {/* Gap analysis tags */}
+                    <div className="flex flex-wrap gap-1.5 mt-2.5">
+                      {gaps.filter(g => g.status === 'strong').slice(0, 2).map((gap, i) => (
+                        <span key={`s-${i}`} className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-600 text-[11px] font-medium">
+                          {gap.detail}
+                        </span>
+                      ))}
+                      {gaps.filter(g => g.status === 'below').map((gap, i) => (
+                        <span key={`b-${i}`} className="px-2 py-0.5 rounded bg-red-50 text-red-600 text-[11px] font-medium">
+                          {gap.detail}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Action buttons */}
+                <div className="flex gap-3 mt-4 pt-3 border-t border-slate-100">
+                  <button onClick={() => setExpandedCard(expandedCard === index ? null : index)}
+                    className="text-xs text-purple-600 hover:text-purple-800 font-medium transition-colors">
+                    {expandedCard === index ? 'Hide details' : 'View details'}
+                  </button>
+                  <button onClick={() => setCostCard(uni)}
+                    className="text-xs text-emerald-600 hover:text-emerald-800 font-medium transition-colors">
+                    Cost breakdown
+                  </button>
+                </div>
+              </div>
+
+              {/* Expanded section */}
+              {expandedCard === index && (
+                <div className="border-t border-slate-100 bg-slate-50 p-5 space-y-5">
+                  {/* Admission Analysis (ML) */}
+                  <div>
+                    <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">ML Admission Analysis</p>
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-slate-600">Admission Probability</span>
+                        <span className={`text-sm font-bold ${getScoreColor(uni.match_score)}`}>{Math.round(uni.match_score)}%</span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-slate-600">Category</span>
+                        <span className={`text-xs font-semibold px-2 py-0.5 rounded ${getCategoryColor(category)}`}>{category}</span>
+                      </div>
+                      {gaps.length > 0 && (
+                        <div className="space-y-1.5 pt-2 border-t border-slate-200">
+                          <span className="text-[11px] text-slate-500">Gap Analysis</span>
+                          {gaps.map((gap, i) => (
+                            <div key={i} className="flex items-start gap-1.5">
+                              <span className={`w-1.5 h-1.5 rounded-full mt-1 flex-shrink-0 ${
+                                gap.status === 'strong' ? 'bg-emerald-500' : gap.status === 'meets' ? 'bg-blue-500' : 'bg-red-500'
+                              }`} />
+                              <span className="text-[11px] text-slate-600">{gap.detail}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* University details (RAG enriched) */}
+                  <div>
+                    <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">
+                      University Details {(uni as Record<string, unknown>).rag_enriched ? '(RAG Enriched)' : ''}
+                    </p>
+                    <div className="bg-white rounded-lg border border-slate-200 divide-y divide-slate-100">
+                      {[
+                        { label: 'Tuition', value: uni.tuition },
+                        { label: 'Living Cost', value: uni.living_cost ? `$${Number(uni.living_cost).toLocaleString()}/yr` : null },
+                        { label: 'Total Cost', value: uni.total_cost_estimated ? `$${Number(uni.total_cost_estimated).toLocaleString()}/yr` : null },
+                        { label: 'GPA Required', value: (uni as Record<string, unknown>).min_gpa ? String((uni as Record<string, unknown>).min_gpa) : null },
+                        { label: 'Acceptance Rate', value: (uni as Record<string, unknown>).acceptance_rate ? `${(uni as Record<string, unknown>).acceptance_rate}%` : null },
+                        { label: 'English', value: uni.english_requirements || null },
+                        { label: 'Test Requirements', value: uni.test_requirements || null },
+                        { label: 'Scholarships', value: uni.scholarships || null },
+                        { label: 'Max Coverage', value: uni.max_coverage_percent ? `Up to ${uni.max_coverage_percent}%` : null },
+                        { label: 'Program Duration', value: uni.program_duration || null },
+                        { label: 'Work Visa', value: Number(uni.work_visa_available) === 1 ? 'Available' : Number(uni.work_visa_available) === 0 ? 'Not Available' : null },
+                        { label: 'Research Focus', value: uni.research_focus || null },
+                        { label: 'Fall Deadline', value: uni.deadline_fall || null },
+                        { label: 'Spring Deadline', value: uni.deadline_spring || null },
+                      ].filter(item => item.value).map(item => (
+                        <div key={item.label} className="flex items-center justify-between px-4 py-2.5">
+                          <span className="text-xs text-slate-500">{item.label}</span>
+                          <span className="text-xs font-medium text-slate-800 text-right max-w-[60%]">{item.value}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+          })}
+
+          {/* Chat section */}
+          <div className="bg-white rounded-xl border border-slate-200 p-5 mt-4">
+            <h4 className="text-sm font-bold text-slate-800 mb-3">Ask About Your Results</h4>
+
+            {chatMessages.length === 0 && (
+              <div className="flex flex-wrap gap-2 mb-4">
+                {[
+                  `Why ${results[0]?.name}?`,
+                  'Compare top 3',
+                  'Which is best for me?',
+                  'Suggest universities not shown',
+                  'How can I improve my chances?',
+                  'Which has best scholarships?',
+                ].map((chip) => (
+                  <button key={chip} onClick={() => handleChatSend(chip)}
+                    className="px-3 py-1.5 rounded-full bg-slate-100 text-slate-600 text-xs font-medium hover:bg-slate-200 transition-colors">
+                    {chip}
                   </button>
                 ))}
               </div>
-            </div>
+            )}
 
-            {/* Scholarship Preference */}
-            <div className="flex items-center gap-4 p-4 rounded-2xl bg-gradient-to-r from-amber-50 to-yellow-50 border border-amber-200">
-              <label className="relative inline-flex items-center cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={requirements.preferScholarship}
-                  onChange={(e) => handleChange('preferScholarship', e.target.checked)}
-                  className="sr-only peer"
-                />
-                <div className="w-14 h-7 bg-slate-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-amber-300 rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:start-[4px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-6 after:w-6 after:transition-all peer-checked:bg-gradient-to-r peer-checked:from-amber-400 peer-checked:to-yellow-500"></div>
-              </label>
-              <div>
-                <span className="font-semibold text-slate-700 flex items-center gap-2">
-                  <span>🎓</span> Prioritize Universities with Scholarships
-                </span>
-                <p className="text-sm text-slate-500">Find schools offering financial aid and scholarships</p>
-              </div>
-            </div>
-
-            {/* Find Button */}
-            <button
-              onClick={handleFind}
-              disabled={loading}
-              className="w-full py-5 rounded-2xl bg-gradient-to-r from-cyan-500 via-purple-500 to-pink-500 bg-[length:200%_100%] text-white font-bold text-lg shadow-lg shadow-purple-500/30 hover:shadow-xl hover:shadow-purple-500/40 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3 btn-shine"
-            >
-              {loading ? (
-                <>
-                  <div className="w-6 h-6 border-3 border-white/30 border-t-white rounded-full animate-spin" />
-                  <span>RAG is Searching...</span>
-                </>
-              ) : (
-                <>
-                  <span className="text-xl">🎯</span>
-                  <span>Find My Perfect Universities</span>
-                </>
-              )}
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Results Section */}
-      {results.length > 0 && (
-        <div className="space-y-6 slide-up">
-          {/* Results Header */}
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-emerald-400 to-teal-500 flex items-center justify-center text-xl shadow-lg">
-                🎉
-              </div>
-              <div>
-                <h3 className="text-xl font-bold text-slate-800">Best Matches Found!</h3>
-                <p className="text-slate-500">
-                  Top {results.length} from {totalInDatabase} universities (RAG Search)
-                </p>
-              </div>
-            </div>
-            <div className="px-4 py-2 rounded-full bg-emerald-100 text-emerald-700 text-sm font-medium">
-              Local AI Search
-            </div>
-          </div>
-
-          {/* University Cards */}
-          <div className="grid gap-6">
-            {results.map((uni, index) => (
-              <div
-                key={index}
-                className="relative overflow-hidden bg-white rounded-3xl shadow-lg border border-slate-100 card-hover"
-                style={{ animationDelay: `${index * 100}ms` }}
-              >
-                {/* Rank Badge */}
-                <div className="absolute top-4 left-4 w-10 h-10 rounded-full bg-slate-800 text-white flex items-center justify-center font-bold text-lg shadow-lg">
-                  #{index + 1}
-                </div>
-
-                {/* Match Score Badge */}
-                <div className={`absolute top-0 right-0 px-6 py-3 rounded-bl-2xl font-bold text-white bg-gradient-to-r ${getScoreColor(uni.match_score)}`}>
-                  <div className="text-2xl">{uni.match_score}%</div>
-                  <div className="text-xs opacity-90">Match</div>
-                </div>
-
-                <div className="p-6 pt-8">
-                  {/* University Name & Location */}
-                  <div className="flex items-center gap-3 mb-4 pl-12 pr-24">
-                    <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-purple-100 to-pink-100 flex items-center justify-center text-xl">
-                      🏛️
-                    </div>
-                    <div>
-                      <h4 className="text-xl font-bold text-slate-800">{uni.name}</h4>
-                      <p className="text-slate-500">{uni.country} • {uni.field} • {uni.degree}</p>
-                    </div>
-                  </div>
-
-                  {/* Score Breakdown - Visual Bars */}
-                  {uni.score_breakdown && (
-                    <div className="mb-6 p-4 rounded-2xl bg-slate-50 border border-slate-100">
-                      <p className="text-sm font-semibold text-slate-600 mb-3">Match Score Breakdown</p>
-                      <div className="space-y-3">
-                        {/* Semantic Similarity */}
-                        <div>
-                          <div className="flex justify-between text-sm mb-1">
-                            <span className="text-slate-600">🧠 Meaning Match</span>
-                            <span className="font-semibold text-purple-600">{uni.score_breakdown.semantic_similarity}%</span>
-                          </div>
-                          <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
-                            <div
-                              className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full transition-all duration-500"
-                              style={{ width: `${uni.score_breakdown.semantic_similarity}%` }}
-                            />
-                          </div>
-                        </div>
-                        {/* Budget Fit */}
-                        <div>
-                          <div className="flex justify-between text-sm mb-1">
-                            <span className="text-slate-600">💰 Budget Fit</span>
-                            <span className="font-semibold text-emerald-600">{uni.score_breakdown.budget_fit}%</span>
-                          </div>
-                          <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
-                            <div
-                              className="h-full bg-gradient-to-r from-emerald-500 to-teal-500 rounded-full transition-all duration-500"
-                              style={{ width: `${uni.score_breakdown.budget_fit}%` }}
-                            />
-                          </div>
-                        </div>
-                        {/* GPA Fit */}
-                        <div>
-                          <div className="flex justify-between text-sm mb-1">
-                            <span className="text-slate-600">📊 GPA Qualification</span>
-                            <span className="font-semibold text-blue-600">{uni.score_breakdown.gpa_fit}%</span>
-                          </div>
-                          <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
-                            <div
-                              className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 rounded-full transition-all duration-500"
-                              style={{ width: `${uni.score_breakdown.gpa_fit}%` }}
-                            />
-                          </div>
-                        </div>
-                        {/* Field Match */}
-                        <div>
-                          <div className="flex justify-between text-sm mb-1">
-                            <span className="text-slate-600">🎯 Field Match</span>
-                            <span className="font-semibold text-amber-600">{uni.score_breakdown.field_match}%</span>
-                          </div>
-                          <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
-                            <div
-                              className="h-full bg-gradient-to-r from-amber-500 to-orange-500 rounded-full transition-all duration-500"
-                              style={{ width: `${uni.score_breakdown.field_match}%` }}
-                            />
-                          </div>
-                        </div>
+            {chatMessages.length > 0 && (
+              <div className="mb-4 max-h-[400px] overflow-y-auto space-y-3 rounded-lg bg-slate-50 p-4">
+                {chatMessages.map((msg) => {
+                  const isStreaming = chatLoading && msg.sender === 'ai' && msg === chatMessages[chatMessages.length - 1];
+                  const isEmpty = !msg.text;
+                  return (
+                    <div key={msg.id} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
+                      <div className={`max-w-[85%] px-3 py-2 rounded-xl text-sm whitespace-pre-wrap ${
+                        msg.sender === 'user'
+                          ? 'bg-purple-500 text-white'
+                          : 'bg-white border border-slate-200 text-slate-700'
+                      }`}>
+                        {msg.sender === 'ai' && isStreaming && isEmpty ? (
+                          /* Typing dots while waiting for first token */
+                          <span className="flex gap-1 items-center py-0.5">
+                            <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce" style={{ animationDelay: '0ms' }} />
+                            <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce" style={{ animationDelay: '150ms' }} />
+                            <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce" style={{ animationDelay: '300ms' }} />
+                          </span>
+                        ) : (
+                          /* Message text + blinking cursor while streaming */
+                          <>
+                            {msg.text}
+                            {isStreaming && !isEmpty && (
+                              <span className="inline-block w-0.5 h-4 bg-purple-500 ml-0.5 align-text-bottom animate-pulse" />
+                            )}
+                          </>
+                        )}
                       </div>
                     </div>
-                  )}
+                  );
+                })}
+                <div ref={chatEndRef} />
+              </div>
+            )}
 
-                  {/* Quick Info Grid */}
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-                    <div className="p-4 rounded-2xl bg-gradient-to-br from-green-50 to-emerald-50 border border-green-100">
-                      <div className="flex items-center gap-2 text-green-600 text-sm font-medium mb-1">
-                        <span>💰</span> Tuition
-                      </div>
-                      <p className="font-bold text-slate-800">{uni.tuition}</p>
-                    </div>
-                    <div className="p-4 rounded-2xl bg-gradient-to-br from-purple-50 to-pink-50 border border-purple-100">
-                      <div className="flex items-center gap-2 text-purple-600 text-sm font-medium mb-1">
-                        <span>📊</span> GPA Required
-                      </div>
-                      <p className="font-bold text-slate-800">{uni.gpa_required || 'Contact school'}</p>
-                    </div>
-                    <div className="p-4 rounded-2xl bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-100">
-                      <div className="flex items-center gap-2 text-blue-600 text-sm font-medium mb-1">
-                        <span>🎓</span> Program
-                      </div>
-                      <p className="font-bold text-slate-800">{uni.degree}</p>
-                    </div>
-                  </div>
-
-                  {/* Reasons */}
-                  {uni.reasons && uni.reasons.length > 0 && (
-                    <div className="p-4 rounded-2xl bg-gradient-to-r from-cyan-50 via-purple-50 to-pink-50 border border-purple-100">
-                      <div className="flex items-start gap-3">
-                        <span className="text-xl">✅</span>
-                        <div>
-                          <p className="font-semibold text-purple-700 mb-2">Why This University Matches</p>
-                          <ul className="space-y-1">
-                            {uni.reasons.map((reason, i) => (
-                              <li key={i} className="text-slate-600 flex items-center gap-2">
-                                <span className="w-1.5 h-1.5 rounded-full bg-purple-400"></span>
-                                {reason}
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {/* How RAG Works Explanation */}
-          <div className="p-6 rounded-3xl bg-gradient-to-r from-slate-800 to-slate-900 text-white">
-            <h4 className="text-lg font-bold mb-3 flex items-center gap-2">
-              <span>🤖</span> How This Search Works (RAG Technology)
-            </h4>
-            <div className="grid md:grid-cols-4 gap-4 text-sm">
-              <div className="p-3 rounded-xl bg-white/10">
-                <div className="text-2xl mb-2">1️⃣</div>
-                <p><strong>Your Input</strong> is converted to numbers (384-dimensional vector)</p>
-              </div>
-              <div className="p-3 rounded-xl bg-white/10">
-                <div className="text-2xl mb-2">2️⃣</div>
-                <p><strong>Vector Search</strong> finds universities with similar meaning</p>
-              </div>
-              <div className="p-3 rounded-xl bg-white/10">
-                <div className="text-2xl mb-2">3️⃣</div>
-                <p><strong>Criteria Check</strong> scores budget, GPA, and field match</p>
-              </div>
-              <div className="p-3 rounded-xl bg-white/10">
-                <div className="text-2xl mb-2">4️⃣</div>
-                <p><strong>Final Score</strong> = 40% semantic + 60% criteria</p>
-              </div>
+            <div className="flex gap-2 items-end">
+              <textarea
+                value={chatInput}
+                onChange={(e) => {
+                  setChatInput(e.target.value);
+                  // Auto-grow: reset height then set to scrollHeight
+                  e.target.style.height = 'auto';
+                  e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleChatSend();
+                    // Reset height after send
+                    (e.target as HTMLTextAreaElement).style.height = 'auto';
+                  }
+                }}
+                placeholder="Ask anything..."
+                disabled={chatLoading}
+                rows={1}
+                className="flex-1 px-3 py-2 rounded-lg border border-slate-200 text-sm text-slate-800 placeholder:text-slate-400 focus:border-purple-500 outline-none disabled:opacity-50 resize-none overflow-hidden"
+                style={{ minHeight: '38px' }}
+              />
+              <button onClick={() => {
+                handleChatSend();
+                // Find and reset textarea height
+                const ta = document.querySelector('.flex.gap-2.items-end textarea') as HTMLTextAreaElement;
+                if (ta) ta.style.height = 'auto';
+              }}
+                disabled={chatLoading || !chatInput.trim()}
+                className="px-4 py-2 rounded-lg bg-purple-600 text-white text-sm font-medium hover:bg-purple-700 transition-colors disabled:opacity-50 flex-shrink-0"
+                style={{ height: '38px' }}>
+                Send
+              </button>
             </div>
           </div>
         </div>
+      )}
+
+      {/* Cost Calculator Modal */}
+      {costCard && (
+        <CostCalculator
+          universityName={costCard.name}
+          country={costCard.country}
+          tuition={costCard.tuition}
+          programDuration={costCard.program_duration}
+          onClose={() => setCostCard(null)}
+        />
       )}
     </div>
   );

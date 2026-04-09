@@ -72,13 +72,24 @@ class Reranker:
         # Score all pairs at once
         raw_scores = self._model.predict(pairs)
 
-        # Normalize scores to 0-1 via sigmoid
+        # Normalize scores within the batch using min-max scaling
+        # Why: ms-marco model gives low absolute scores for structured (non-web) data,
+        # but relative ordering is still correct. Min-max scaling spreads scores across
+        # 0.1-0.95 range so they're visually meaningful in the UI.
         import numpy as np
-        sigmoid_scores = 1.0 / (1.0 + np.exp(-np.array(raw_scores)))
+        scores_array = np.array(raw_scores, dtype=float)
+        min_s = scores_array.min()
+        max_s = scores_array.max()
+        if max_s - min_s > 1e-6:
+            # Scale to 0.1 - 0.95 range (avoid 0% and 100%)
+            normalized = 0.1 + 0.85 * (scores_array - min_s) / (max_s - min_s)
+        else:
+            # All scores identical — give everyone a neutral 0.5
+            normalized = np.full_like(scores_array, 0.5)
 
         # Attach scores and sort
         for i, c in enumerate(candidates):
-            c["rerank_score"] = float(sigmoid_scores[i])
+            c["rerank_score"] = float(normalized[i])
 
         # Sort descending by rerank_score
         reranked = sorted(candidates, key=lambda x: x["rerank_score"], reverse=True)

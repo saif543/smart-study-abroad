@@ -109,24 +109,64 @@ class VectorStore:
         """
         # Set default path if not provided
         if persist_directory is None:
-            # Store in backend/rag/chroma_db/
             current_dir = os.path.dirname(os.path.abspath(__file__))
-            persist_directory = os.path.join(current_dir, "chroma_db")
+            # Prefer unified database (ML-enriched, 26 fields) > fresh > default
+            unified = os.path.join(current_dir, "chroma_db_unified")
+            fresh = os.path.join(current_dir, "chroma_db_fresh")
+            default = os.path.join(current_dir, "chroma_db")
+            if os.path.isdir(unified):
+                persist_directory = unified
+            elif os.path.isdir(fresh):
+                persist_directory = fresh
+            else:
+                persist_directory = default
+
+        # Normalize path to ensure proper handling on Windows
+        persist_directory = os.path.normpath(persist_directory)
+        persist_directory = os.path.abspath(persist_directory)
 
         print(f"Initializing ChromaDB at: {persist_directory}")
 
         # Create ChromaDB client with persistence
         # This saves data to disk so it survives program restarts
-        self.client = chromadb.PersistentClient(path=persist_directory)
+        try:
+            self.client = chromadb.PersistentClient(path=persist_directory)
+        except Exception as e:
+            print(f"ERROR: Failed to initialize ChromaDB client at {persist_directory}: {e}")
+            raise
 
         # Get or create our collection (like a "table" in regular databases)
         # We call it "universities" to store university vectors
-        self.collection = self.client.get_or_create_collection(
-            name="universities",
-            metadata={"description": "University embeddings for RAG search", "hnsw:space": "cosine"}
-        )
-
-        print(f"Collection 'universities' ready. Current count: {self.collection.count()}")
+        collection_created = False
+        try:
+            # Try to get existing collection first
+            self.collection = self.client.get_collection(
+                name="universities"
+            )
+            # Verify the collection is accessible by trying to get count
+            count = self.collection.count()
+            print(f"Found existing collection. Current count: {count}")
+            collection_created = True
+        except Exception as e:
+            # If collection doesn't exist or is corrupted, create it fresh
+            print(f"Existing collection not accessible: {e}")
+            print("Creating new collection...")
+            try:
+                # Try to delete first if it exists in a bad state
+                try:
+                    self.client.delete_collection("universities")
+                except:
+                    pass
+                # Create fresh collection
+                self.collection = self.client.create_collection(
+                    name="universities",
+                    metadata={"description": "University embeddings for RAG search", "hnsw:space": "cosine"}
+                )
+                print(f"Collection 'universities' created successfully")
+                collection_created = True
+            except Exception as creation_error:
+                print(f"ERROR: Failed to create collection: {creation_error}")
+                raise
 
     def add_university(self, university_data: dict, embedding: np.ndarray, doc_id: str = None) -> str:
         """
@@ -215,6 +255,13 @@ class VectorStore:
                 'toefl': eng_req['TOEFL'],
                 'scholarships': uni.get('scholarships', ''),
             }
+            # Store ALL extra fields from the JSON so the frontend can display them
+            extra_fields = ['deadline_fall', 'deadline_spring', 'deadline_summer',
+                           'english_requirements', 'test_requirements', 'program_duration', 'qs_ranking']
+            for ef in extra_fields:
+                val = uni.get(ef, '')
+                if val:
+                    metadata[ef] = str(val)
             metadatas.append(metadata)
 
             # Create enriched document text (improves BM25 keyword recall)
@@ -323,8 +370,13 @@ class VectorStore:
         Useful when re-importing data.
         """
         # Delete and recreate the collection
-        self.client.delete_collection("universities")
-        self.collection = self.client.get_or_create_collection(
+        try:
+            self.client.delete_collection("universities")
+        except Exception as e:
+            print(f"Note: Could not delete collection (may not exist): {e}")
+
+        # Create a fresh collection
+        self.collection = self.client.create_collection(
             name="universities",
             metadata={"description": "University embeddings for RAG search", "hnsw:space": "cosine"}
         )

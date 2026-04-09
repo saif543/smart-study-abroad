@@ -8,20 +8,62 @@ interface SearchResult {
   descriptive?: string;
   data_year?: number;
   official_name?: string;
+  key_data?: string;
+  query_type?: string;
 }
 
 interface SearchTabProps {
   onAIMessage: (message: string) => void;
 }
 
+// Data field options with icons and labels
+const dataFields = [
+  { key: 'tuition_fees', label: 'Tuition Fees', icon: '💰' },
+  { key: 'deadline_fall', label: 'Fall Deadline', icon: '🍂' },
+  { key: 'deadline_spring', label: 'Spring Deadline', icon: '🌸' },
+  { key: 'deadline_summer', label: 'Summer Deadline', icon: '☀️' },
+  { key: 'english_requirements', label: 'IELTS/TOEFL', icon: '📝' },
+  { key: 'gpa_requirement', label: 'GPA', icon: '📊' },
+  { key: 'test_requirements', label: 'GRE/GMAT', icon: '📈' },
+  { key: 'scholarships', label: 'Scholarships', icon: '🎓' },
+  { key: 'program_duration', label: 'Duration', icon: '⏱️' },
+];
+
 export default function SearchTab({ onAIMessage }: SearchTabProps) {
   const [university, setUniversity] = useState('');
   const [degree, setDegree] = useState<'Bachelor' | 'Master' | 'PhD'>('Master');
   const [field, setField] = useState('');
-  const [question, setQuestion] = useState('');
-  const [fetchAll, setFetchAll] = useState(false);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<SearchResult | null>(null);
+  const [showDetails, setShowDetails] = useState(false);
+
+  // Selected data fields to display
+  const [selectedFields, setSelectedFields] = useState<Record<string, boolean>>({
+    tuition_fees: true,
+    deadline_fall: true,
+    deadline_spring: true,
+    deadline_summer: true,
+    english_requirements: true,
+    gpa_requirement: true,
+    test_requirements: true,
+    scholarships: true,
+    program_duration: true,
+  });
+
+  // Toggle individual field
+  const toggleField = (key: string) => {
+    setSelectedFields(prev => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  // Select all / Deselect all
+  const toggleAllFields = (selectAll: boolean) => {
+    const newState: Record<string, boolean> = {};
+    dataFields.forEach(f => { newState[f.key] = selectAll; });
+    setSelectedFields(newState);
+  };
+
+  // Check if at least one field is selected
+  const hasSelectedFields = Object.values(selectedFields).some(v => v);
 
   const handleSearch = async () => {
     if (!university || !field) {
@@ -29,15 +71,17 @@ export default function SearchTab({ onAIMessage }: SearchTabProps) {
       return;
     }
 
-    if (!fetchAll && !question) {
-      onAIMessage('Please enter your question or check "Fetch ALL" box');
+    if (!hasSelectedFields) {
+      onAIMessage('Please select at least one data field');
       return;
     }
 
     setLoading(true);
+    setShowDetails(false);
     onAIMessage(`Searching for ${university} - ${degree} in ${field}...`);
 
     try {
+      // Always fetch all 7 data points, filter display based on selectedFields
       const response = await fetch('/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -45,8 +89,8 @@ export default function SearchTab({ onAIMessage }: SearchTabProps) {
           university,
           degree,
           field,
-          question: fetchAll ? 'all' : question,
-          fetchAll,
+          question: 'all',
+          fetchAll: true,
         }),
       });
 
@@ -70,6 +114,7 @@ export default function SearchTab({ onAIMessage }: SearchTabProps) {
 
   const handleUpdate = async () => {
     setLoading(true);
+    setShowDetails(false);
     onAIMessage('Fetching fresh data from AI...');
 
     try {
@@ -175,37 +220,56 @@ export default function SearchTab({ onAIMessage }: SearchTabProps) {
               </div>
             </div>
 
-            {/* Question Input */}
-            <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-2 flex items-center gap-2">
-                <span className="w-6 h-6 rounded-lg bg-amber-100 flex items-center justify-center text-sm">❓</span>
-                What do you want to know?
-              </label>
-              <textarea
-                value={question}
-                onChange={(e) => setQuestion(e.target.value)}
-                placeholder="e.g., tuition fees, admission requirements, application deadlines"
-                rows={3}
-                disabled={fetchAll}
-                className="w-full px-5 py-4 rounded-2xl border-2 border-slate-200 focus:border-purple-500 focus:ring-4 focus:ring-purple-500/10 transition-all outline-none text-slate-800 placeholder:text-slate-400 disabled:bg-slate-50 disabled:cursor-not-allowed resize-none"
-              />
-            </div>
-
-            {/* Fetch All Toggle */}
-            <div className="flex items-center gap-4 p-4 rounded-2xl bg-gradient-to-r from-purple-50 to-pink-50 border border-purple-100">
-              <label className="relative inline-flex items-center cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={fetchAll}
-                  onChange={(e) => setFetchAll(e.target.checked)}
-                  className="sr-only peer"
-                />
-                <div className="w-14 h-7 bg-slate-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-300 rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:start-[4px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-6 after:w-6 after:transition-all peer-checked:bg-gradient-to-r peer-checked:from-purple-500 peer-checked:to-pink-500"></div>
-              </label>
-              <div>
-                <span className="font-semibold text-slate-700">Fetch ALL 7 Data Points</span>
-                <p className="text-sm text-slate-500">Get tuition, deadlines, requirements, scholarships & more</p>
+            {/* Data Fields Selection - 7 Checkboxes */}
+            <div className="p-4 rounded-2xl bg-gradient-to-r from-purple-50 to-pink-50 border border-purple-100">
+              <div className="flex items-center justify-between mb-4">
+                <label className="block text-sm font-semibold text-slate-700 flex items-center gap-2">
+                  <span className="w-6 h-6 rounded-lg bg-purple-100 flex items-center justify-center text-sm">📋</span>
+                  Select Data to Display
+                </label>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => toggleAllFields(true)}
+                    className="px-3 py-1 text-xs font-semibold bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition-colors"
+                  >
+                    All
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => toggleAllFields(false)}
+                    className="px-3 py-1 text-xs font-semibold bg-slate-300 text-slate-700 rounded-lg hover:bg-slate-400 transition-colors"
+                  >
+                    None
+                  </button>
+                </div>
               </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {dataFields.map((item) => (
+                  <label
+                    key={item.key}
+                    className={`flex items-center gap-2 p-3 rounded-xl cursor-pointer transition-all ${
+                      selectedFields[item.key]
+                        ? 'bg-purple-500 text-white shadow-md'
+                        : 'bg-white text-slate-700 hover:bg-purple-100'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedFields[item.key]}
+                      onChange={() => toggleField(item.key)}
+                      className="sr-only"
+                    />
+                    <span className="text-lg">{item.icon}</span>
+                    <span className="text-xs font-medium">{item.label}</span>
+                  </label>
+                ))}
+              </div>
+
+              <p className="text-xs text-slate-500 mt-3 text-center">
+                AI fetches all data & stores in database, shows only your selected items
+              </p>
             </div>
 
             {/* Search Button */}
@@ -281,25 +345,15 @@ export default function SearchTab({ onAIMessage }: SearchTabProps) {
                 </div>
               )}
 
-              {result.descriptive && (
-                <div className="mb-6 p-6 bg-white/60 rounded-2xl border border-slate-200">
-                  <h4 className="font-bold text-slate-800 mb-3 flex items-center gap-2">
-                    <span>📖</span> Detailed Information
-                  </h4>
-                  <div className="prose prose-sm max-w-none text-slate-700 whitespace-pre-wrap leading-relaxed">
-                    {result.descriptive}
-                  </div>
-                </div>
-              )}
-
+              {/* Key Data Points - Shown First */}
               {result.data && (
-                <div className="space-y-4">
+                <div className="space-y-4 mb-6">
                   <h4 className="font-bold text-slate-800 flex items-center gap-2">
                     <span>💾</span> Key Data Points
                   </h4>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     {Object.entries(result.data).map(([key, value]) => {
-                      if (key === 'data_year') return null;
+                      if (key === 'data_year' || !value || !selectedFields[key]) return null;
                       return (
                         <div key={key} className="p-4 bg-white/80 rounded-2xl border border-slate-200 card-hover">
                           <div className="flex items-center gap-3 mb-2">
@@ -318,15 +372,47 @@ export default function SearchTab({ onAIMessage }: SearchTabProps) {
                 </div>
               )}
 
-              {result.source === 'cache' && (
-                <button
-                  onClick={handleUpdate}
-                  disabled={loading}
-                  className="mt-6 px-8 py-3 rounded-xl bg-gradient-to-r from-purple-500 to-pink-500 text-white font-semibold shadow-lg hover:shadow-xl transition-all disabled:opacity-50 flex items-center gap-2"
-                >
-                  <span>🔄</span> Refresh Data from AI
-                </button>
+              {/* Expandable Detailed Information */}
+              {result.descriptive && (
+                <div className="mb-6">
+                  <button
+                    onClick={() => setShowDetails(!showDetails)}
+                    className="w-full p-4 bg-white/60 rounded-2xl border border-slate-200 hover:bg-white/80 transition-all flex items-center justify-between group"
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className="text-2xl">📖</span>
+                      <span className="font-bold text-slate-800">Detailed Information & Sources</span>
+                    </div>
+                    <div className={`w-10 h-10 rounded-xl bg-gradient-to-r from-purple-500 to-pink-500 flex items-center justify-center text-white transition-transform duration-300 ${showDetails ? 'rotate-180' : ''}`}>
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                      </svg>
+                    </div>
+                  </button>
+
+                  {/* Collapsible Content */}
+                  <div className={`overflow-hidden transition-all duration-500 ease-in-out ${showDetails ? 'max-h-[3000px] opacity-100 mt-4' : 'max-h-0 opacity-0'}`}>
+                    <div className="p-6 bg-white/60 rounded-2xl border border-slate-200">
+                      <div className="prose prose-sm max-w-none text-slate-700 whitespace-pre-wrap leading-relaxed">
+                        {result.descriptive}
+                      </div>
+                    </div>
+                  </div>
+                </div>
               )}
+
+              {/* Action Buttons */}
+              <div className="flex flex-wrap gap-4">
+                {result.source === 'cache' && (
+                  <button
+                    onClick={handleUpdate}
+                    disabled={loading}
+                    className="px-8 py-3 rounded-xl bg-gradient-to-r from-purple-500 to-pink-500 text-white font-semibold shadow-lg hover:shadow-xl transition-all disabled:opacity-50 flex items-center gap-2"
+                  >
+                    <span>🔄</span> Refresh Data from AI
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </div>

@@ -3,8 +3,8 @@
 import { useState, useRef, useEffect } from 'react';
 
 interface NavbarProps {
-  currentTool: 'search' | 'findme';
-  onToolChange: (tool: 'search' | 'findme') => void;
+  currentTool: 'search' | 'findme' | 'predict';
+  onToolChange: (tool: 'search' | 'findme' | 'predict') => void;
 }
 
 export default function Navbar({ currentTool, onToolChange }: NavbarProps) {
@@ -31,8 +31,9 @@ export default function Navbar({ currentTool, onToolChange }: NavbarProps) {
   }, []);
 
   const tools = [
-    { id: 'search' as const, name: 'Search University', icon: '🔍' },
-    { id: 'findme' as const, name: 'Find For Me', icon: '🎯' },
+    { id: 'search' as const, name: 'Search University', icon: '🔍', desc: 'Search by name' },
+    { id: 'findme' as const, name: 'Find For Me', icon: '🎯', desc: 'AI recommendations' },
+    { id: 'predict' as const, name: 'Predict Admission', icon: '📊', desc: 'ML admission chances' },
   ];
 
   return (
@@ -96,7 +97,7 @@ export default function Navbar({ currentTool, onToolChange }: NavbarProps) {
                     <div>
                       <span className="text-slate-800 font-medium block">{tool.name}</span>
                       <span className="text-slate-400 text-xs">
-                        {tool.id === 'search' ? 'Search by name' : 'AI recommendations'}
+                        {tool.desc}
                       </span>
                     </div>
                   </button>

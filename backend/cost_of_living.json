@@ -1,0 +1,429 @@
+{
+  "countries": {
+    "USA": {
+      "currency": "USD",
+      "currency_symbol": "$",
+      "cities": {
+        "Boston": {
+          "housing_oncampus_shared": 950,
+          "housing_oncampus_single": 1400,
+          "housing_offcampus_shared": 800,
+          "housing_offcampus_single": 1500,
+          "food_groceries": 400,
+          "eating_out": 150,
+          "transport_monthly_pass": 90,
+          "phone_plan": 50,
+          "internet": 50,
+          "personal_clothing": 120,
+          "entertainment": 100,
+          "utilities": 80
+        },
+        "New York": {
+          "housing_oncampus_shared": 1200,
+          "housing_oncampus_single": 1800,
+          "housing_offcampus_shared": 1100,
+          "housing_offcampus_single": 2200,
+          "food_groceries": 450,
+          "eating_out": 200,
+          "transport_monthly_pass": 132,
+          "phone_plan": 50,
+          "internet": 60,
+          "personal_clothing": 150,
+          "entertainment": 150,
+          "utilities": 90
+        },
+        "Los Angeles": {
+          "housing_oncampus_shared": 1000,
+          "housing_oncampus_single": 1600,
+          "housing_offcampus_shared": 950,
+          "housing_offcampus_single": 1800,
+          "food_groceries": 420,
+          "eating_out": 180,
+          "transport_monthly_pass": 100,
+          "phone_plan": 50,
+          "internet": 55,
+          "personal_clothing": 130,
+          "entertainment": 130,
+          "utilities": 70
+        },
+        "Pittsburgh": {
+          "housing_oncampus_shared": 700,
+          "housing_oncampus_single": 1000,
+          "housing_offcampus_shared": 600,
+          "housing_offcampus_single": 1100,
+          "food_groceries": 320,
+          "eating_out": 120,
+          "transport_monthly_pass": 100,
+          "phone_plan": 45,
+          "internet": 45,
+          "personal_clothing": 100,
+          "entertainment": 80,
+          "utilities": 70
+        },
+        "default": {
+          "housing_oncampus_shared": 850,
+          "housing_oncampus_single": 1200,
+          "housing_offcampus_shared": 750,
+          "housing_offcampus_single": 1400,
+          "food_groceries": 380,
+          "eating_out": 150,
+          "transport_monthly_pass": 90,
+          "phone_plan": 50,
+          "internet": 50,
+          "personal_clothing": 120,
+          "entertainment": 100,
+          "utilities": 75
+        }
+      },
+      "visa": {
+        "student_visa_fee": 185,
+        "sevis_fee": 350,
+        "visa_type": "F-1 Student Visa",
+        "health_insurance_yearly": 2500,
+        "notes": "SEVIS fee required for all F-1 visa applicants"
+      },
+      "one_time_setup": {
+        "flight_estimate_min": 600,
+        "flight_estimate_max": 1400,
+        "bedding_kitchen_setup": 350,
+        "textbooks_supplies": 500
+      }
+    },
+
+    "UK": {
+      "currency": "GBP",
+      "currency_symbol": "£",
+      "cities": {
+        "London": {
+          "housing_oncampus_shared": 900,
+          "housing_oncampus_single": 1300,
+          "housing_offcampus_shared": 800,
+          "housing_offcampus_single": 1600,
+          "food_groceries": 300,
+          "eating_out": 150,
+          "transport_monthly_pass": 170,
+          "phone_plan": 20,
+          "internet": 30,
+          "personal_clothing": 100,
+          "entertainment": 100,
+          "utilities": 120
+        },
+        "Manchester": {
+          "housing_oncampus_shared": 550,
+          "housing_oncampus_single": 800,
+          "housing_offcampus_shared": 500,
+          "housing_offcampus_single": 900,
+          "food_groceries": 250,
+          "eating_out": 100,
+          "transport_monthly_pass": 75,
+          "phone_plan": 15,
+          "internet": 25,
+          "personal_clothing": 80,
+          "entertainment": 80,
+          "utilities": 100
+        },
+        "Edinburgh": {
+          "housing_oncampus_shared": 600,
+          "housing_oncampus_single": 850,
+          "housing_offcampus_shared": 550,
+          "housing_offcampus_single": 950,
+          "food_groceries": 260,
+          "eating_out": 110,
+          "transport_monthly_pass": 60,
+          "phone_plan": 15,
+          "internet": 25,
+          "personal_clothing": 80,
+          "entertainment": 80,
+          "utilities": 100
+        },
+        "default": {
+          "housing_oncampus_shared": 650,
+          "housing_oncampus_single": 950,
+          "housing_offcampus_shared": 580,
+          "housing_offcampus_single": 1050,
+          "food_groceries": 270,
+          "eating_out": 110,
+          "transport_monthly_pass": 80,
+          "phone_plan": 18,
+          "internet": 28,
+          "personal_clothing": 85,
+          "entertainment": 85,
+          "utilities": 105
+        }
+      },
+      "visa": {
+        "student_visa_fee": 490,
+        "sevis_fee": 0,
+        "visa_type": "Student Visa (Tier 4)",
+        "health_insurance_yearly": 776,
+        "notes": "Immigration Health Surcharge (IHS) ~776 GBP/year included"
+      },
+      "one_time_setup": {
+        "flight_estimate_min": 400,
+        "flight_estimate_max": 900,
+        "bedding_kitchen_setup": 250,
+        "textbooks_supplies": 400
+      }
+    },
+
+    "Canada": {
+      "currency": "CAD",
+      "currency_symbol": "CA$",
+      "cities": {
+        "Toronto": {
+          "housing_oncampus_shared": 900,
+          "housing_oncampus_single": 1300,
+          "housing_offcampus_shared": 800,
+          "housing_offcampus_single": 1500,
+          "food_groceries": 380,
+          "eating_out": 150,
+          "transport_monthly_pass": 156,
+          "phone_plan": 55,
+          "internet": 60,
+          "personal_clothing": 120,
+          "entertainment": 100,
+          "utilities": 80
+        },
+        "Vancouver": {
+          "housing_oncampus_shared": 950,
+          "housing_oncampus_single": 1400,
+          "housing_offcampus_shared": 900,
+          "housing_offcampus_single": 1700,
+          "food_groceries": 400,
+          "eating_out": 160,
+          "transport_monthly_pass": 105,
+          "phone_plan": 55,
+          "internet": 60,
+          "personal_clothing": 120,
+          "entertainment": 110,
+          "utilities": 70
+        },
+        "Montreal": {
+          "housing_oncampus_shared": 600,
+          "housing_oncampus_single": 900,
+          "housing_offcampus_shared": 550,
+          "housing_offcampus_single": 950,
+          "food_groceries": 320,
+          "eating_out": 120,
+          "transport_monthly_pass": 94,
+          "phone_plan": 50,
+          "internet": 55,
+          "personal_clothing": 100,
+          "entertainment": 90,
+          "utilities": 70
+        },
+        "default": {
+          "housing_oncampus_shared": 750,
+          "housing_oncampus_single": 1100,
+          "housing_offcampus_shared": 700,
+          "housing_offcampus_single": 1200,
+          "food_groceries": 350,
+          "eating_out": 140,
+          "transport_monthly_pass": 110,
+          "phone_plan": 52,
+          "internet": 58,
+          "personal_clothing": 110,
+          "entertainment": 95,
+          "utilities": 75
+        }
+      },
+      "visa": {
+        "student_visa_fee": 150,
+        "sevis_fee": 0,
+        "visa_type": "Canadian Student Permit",
+        "health_insurance_yearly": 600,
+        "notes": "Provincial health coverage varies; private insurance recommended first year"
+      },
+      "one_time_setup": {
+        "flight_estimate_min": 500,
+        "flight_estimate_max": 1200,
+        "bedding_kitchen_setup": 300,
+        "textbooks_supplies": 450
+      }
+    },
+
+    "Australia": {
+      "currency": "AUD",
+      "currency_symbol": "A$",
+      "cities": {
+        "Sydney": {
+          "housing_oncampus_shared": 1000,
+          "housing_oncampus_single": 1500,
+          "housing_offcampus_shared": 900,
+          "housing_offcampus_single": 1800,
+          "food_groceries": 400,
+          "eating_out": 180,
+          "transport_monthly_pass": 170,
+          "phone_plan": 30,
+          "internet": 60,
+          "personal_clothing": 120,
+          "entertainment": 120,
+          "utilities": 100
+        },
+        "Melbourne": {
+          "housing_oncampus_shared": 900,
+          "housing_oncampus_single": 1300,
+          "housing_offcampus_shared": 800,
+          "housing_offcampus_single": 1500,
+          "food_groceries": 380,
+          "eating_out": 160,
+          "transport_monthly_pass": 100,
+          "phone_plan": 30,
+          "internet": 55,
+          "personal_clothing": 110,
+          "entertainment": 110,
+          "utilities": 90
+        },
+        "Brisbane": {
+          "housing_oncampus_shared": 750,
+          "housing_oncampus_single": 1100,
+          "housing_offcampus_shared": 700,
+          "housing_offcampus_single": 1200,
+          "food_groceries": 350,
+          "eating_out": 140,
+          "transport_monthly_pass": 110,
+          "phone_plan": 28,
+          "internet": 50,
+          "personal_clothing": 100,
+          "entertainment": 100,
+          "utilities": 85
+        },
+        "default": {
+          "housing_oncampus_shared": 850,
+          "housing_oncampus_single": 1250,
+          "housing_offcampus_shared": 780,
+          "housing_offcampus_single": 1400,
+          "food_groceries": 370,
+          "eating_out": 155,
+          "transport_monthly_pass": 120,
+          "phone_plan": 29,
+          "internet": 55,
+          "personal_clothing": 110,
+          "entertainment": 110,
+          "utilities": 92
+        }
+      },
+      "visa": {
+        "student_visa_fee": 710,
+        "sevis_fee": 0,
+        "visa_type": "Student Visa (Subclass 500)",
+        "health_insurance_yearly": 600,
+        "notes": "Overseas Student Health Cover (OSHC) mandatory ~600 AUD/year"
+      },
+      "one_time_setup": {
+        "flight_estimate_min": 700,
+        "flight_estimate_max": 1500,
+        "bedding_kitchen_setup": 300,
+        "textbooks_supplies": 450
+      }
+    },
+
+    "Germany": {
+      "currency": "EUR",
+      "currency_symbol": "€",
+      "cities": {
+        "Munich": {
+          "housing_oncampus_shared": 500,
+          "housing_oncampus_single": 700,
+          "housing_offcampus_shared": 600,
+          "housing_offcampus_single": 1100,
+          "food_groceries": 250,
+          "eating_out": 120,
+          "transport_monthly_pass": 57,
+          "phone_plan": 15,
+          "internet": 30,
+          "personal_clothing": 80,
+          "entertainment": 80,
+          "utilities": 80
+        },
+        "Berlin": {
+          "housing_oncampus_shared": 400,
+          "housing_oncampus_single": 600,
+          "housing_offcampus_shared": 500,
+          "housing_offcampus_single": 900,
+          "food_groceries": 230,
+          "eating_out": 100,
+          "transport_monthly_pass": 86,
+          "phone_plan": 15,
+          "internet": 30,
+          "personal_clothing": 75,
+          "entertainment": 75,
+          "utilities": 70
+        },
+        "Hamburg": {
+          "housing_oncampus_shared": 420,
+          "housing_oncampus_single": 620,
+          "housing_offcampus_shared": 520,
+          "housing_offcampus_single": 950,
+          "food_groceries": 240,
+          "eating_out": 105,
+          "transport_monthly_pass": 109,
+          "phone_plan": 15,
+          "internet": 30,
+          "personal_clothing": 78,
+          "entertainment": 78,
+          "utilities": 72
+        },
+        "default": {
+          "housing_oncampus_shared": 380,
+          "housing_oncampus_single": 580,
+          "housing_offcampus_shared": 480,
+          "housing_offcampus_single": 850,
+          "food_groceries": 230,
+          "eating_out": 100,
+          "transport_monthly_pass": 80,
+          "phone_plan": 15,
+          "internet": 28,
+          "personal_clothing": 75,
+          "entertainment": 70,
+          "utilities": 70
+        }
+      },
+      "visa": {
+        "student_visa_fee": 75,
+        "sevis_fee": 0,
+        "visa_type": "German Student Visa (National Visa D)",
+        "health_insurance_yearly": 1100,
+        "notes": "Public health insurance mandatory ~92 EUR/month. Many public unis have near-zero tuition."
+      },
+      "one_time_setup": {
+        "flight_estimate_min": 400,
+        "flight_estimate_max": 900,
+        "bedding_kitchen_setup": 250,
+        "textbooks_supplies": 300
+      }
+    }
+  },
+
+  "university_extras": {
+    "notes": "These are typical per-university annual fees to add on top of tuition",
+    "typical_fees": {
+      "student_activity_fee": 300,
+      "technology_fee": 200,
+      "library_fee": 100,
+      "health_center_fee": 150,
+      "orientation_fee": 100
+    }
+  },
+
+  "meal_plan_options": {
+    "none":          { "label": "Cook yourself",      "monthly_cost": 0   },
+    "basic":         { "label": "Basic meal plan",    "monthly_cost": 250 },
+    "standard":      { "label": "Standard meal plan", "monthly_cost": 400 },
+    "full":          { "label": "Full meal plan",     "monthly_cost": 550 }
+  },
+
+  "housing_type_labels": {
+    "housing_oncampus_shared": "On-campus (shared room)",
+    "housing_oncampus_single": "On-campus (single room)",
+    "housing_offcampus_shared": "Off-campus (shared apartment)",
+    "housing_offcampus_single": "Off-campus (alone)"
+  },
+
+  "metadata": {
+    "last_updated": "2026-03",
+    "currency_note": "All values in local currency of each country",
+    "source": "Averaged from Numbeo, university housing pages, student forums 2025-2026",
+    "disclaimer": "Estimates only. Actual costs vary by lifestyle and specific city area."
+  }
+}
