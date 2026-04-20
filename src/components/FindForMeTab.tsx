@@ -13,20 +13,25 @@ interface Requirements {
   country: string;
   preferScholarship: boolean;
   freeText: string;
-  // ML fields
-  researchExp: string;
-  ecaLevel: string;
-  gre: string;
-  sat: string;
+}
+
+interface RequirementCheck {
+  label: string;
+  passed: boolean;
+  yours: string;
+  needs: string;
+  tip?: string | null;
 }
 
 export interface MatchedUniversity {
   name: string;
   country: string;
-  match_score: number;  // ML admission probability (0-100)
+  match_score: number;
   tuition: string;
+  tuition_fees?: number;
   field: string;
   degree: string;
+  gpa_required?: number;
   ielts: number;
   toefl: number;
   scholarships: string;
@@ -36,6 +41,9 @@ export interface MatchedUniversity {
   program_duration: string;
   english_requirements: string;
   qs_ranking: string;
+  acceptance_rate?: number;
+  fit_label?: string;
+  requirement_checks?: RequirementCheck[];
   living_cost: number;
   total_cost_estimated: number;
   max_coverage_percent: number;
@@ -44,7 +52,8 @@ export interface MatchedUniversity {
   eca_weight: number;
   research_focus: string;
   programs_offered: string;
-  [key: string]: unknown;
+  score_breakdown?: Record<string, number>;
+  reasons?: string[];
 }
 
 interface FindForMeTabProps {
@@ -63,10 +72,6 @@ export default function FindForMeTab({ onAIMessage, onRAGResults }: FindForMeTab
     country: 'USA',
     preferScholarship: false,
     freeText: '',
-    researchExp: '0',
-    ecaLevel: '0',
-    gre: '',
-    sat: '',
   });
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<MatchedUniversity[]>([]);
@@ -75,13 +80,8 @@ export default function FindForMeTab({ onAIMessage, onRAGResults }: FindForMeTab
   const [chatMessages, setChatMessages] = useState<{id: string; text: string; sender: 'user' | 'ai'; timestamp: Date}[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const [chatContext, setChatContext] = useState<any>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const [costCard, setCostCard] = useState<MatchedUniversity | null>(null);
-  const [mlBase, setMlBase] = useState<{ probability: number; confidence: string; recommendation: string } | null>(null);
-  const [categoryCounts, setCategoryCounts] = useState<{ safe: number; moderate: number; risky: number } | null>(null);
-  const [improvements, setImprovements] = useState<{ action: string; impact: string }[]>([]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -96,7 +96,6 @@ export default function FindForMeTab({ onAIMessage, onRAGResults }: FindForMeTab
     setChatInput('');
     setChatLoading(true);
 
-    // Create a placeholder AI message that we'll stream into
     const aiMsgId = (Date.now() + 1).toString();
     setChatMessages(prev => [...prev, { id: aiMsgId, text: '', sender: 'ai' as const, timestamp: new Date() }]);
 
@@ -109,11 +108,7 @@ export default function FindForMeTab({ onAIMessage, onRAGResults }: FindForMeTab
       const response = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: text,
-          history,
-          rag_context: chatContext || results,
-        }),
+        body: JSON.stringify({ message: text, history, rag_context: results }),
       });
 
       if (!response.body) throw new Error('No response body');
@@ -125,17 +120,14 @@ export default function FindForMeTab({ onAIMessage, onRAGResults }: FindForMeTab
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-
         const chunk = decoder.decode(value, { stream: true });
         const lines = chunk.split('\n');
-
         for (const line of lines) {
           if (line.startsWith('data: ')) {
             try {
               const data = JSON.parse(line.slice(6));
               if (data.token) {
                 accumulated += data.token;
-                // Update the AI message in-place with accumulated text
                 setChatMessages(prev =>
                   prev.map(m => m.id === aiMsgId ? { ...m, text: accumulated } : m)
                 );
@@ -152,7 +144,6 @@ export default function FindForMeTab({ onAIMessage, onRAGResults }: FindForMeTab
         }
       }
 
-      // If no text was streamed, show fallback
       if (!accumulated) {
         setChatMessages(prev =>
           prev.map(m => m.id === aiMsgId ? { ...m, text: 'No response received. Is Ollama running?' } : m)
@@ -180,45 +171,24 @@ export default function FindForMeTab({ onAIMessage, onRAGResults }: FindForMeTab
     setLoading(true);
     setChatMessages([]);
     setChatInput('');
-    onAIMessage('ML scoring all universities + RAG enriching details...');
+    onAIMessage('Searching universities with RAG...');
 
     try {
-      // Single call: ML scores all 232 universities → RAG enriches top results
       const response = await fetch('/api/findme', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...requirements,
-          top_k: 5
-        }),
+        body: JSON.stringify({ ...requirements, top_k: 5 }),
       });
 
       const data = await response.json();
 
-      if (data.universities) {
+      if (data.universities && data.universities.length > 0) {
         setResults(data.universities);
         setTotalInDatabase(data.total_in_database || 0);
-        setChatContext(data.chat_context || data.universities);
-        setCategoryCounts(data.category_counts || null);
-        setImprovements(data.improvements || []);
-
-        // Set ML base prediction
-        if (data.ml_prediction) {
-          setMlBase({
-            probability: data.ml_prediction.ml_probability || 0,
-            confidence: data.ml_prediction.confidence || '',
-            recommendation: data.recommendation || '',
-          });
-        } else {
-          setMlBase(null);
-        }
-
-        const cc = data.category_counts;
-        const countMsg = cc ? ` (Safe: ${cc.safe}, Moderate: ${cc.moderate}, Risky: ${cc.risky})` : '';
-        onAIMessage(`ML ranked ${data.total_in_database} universities${countMsg} — showing top ${data.universities.length} with RAG details`);
+        onAIMessage(`Found ${data.universities.length} best matches from ${data.total_in_database} universities`);
         onRAGResults?.(data.universities);
       } else {
-        onAIMessage(data.error || 'No universities found');
+        onAIMessage(data.error || 'No universities found matching your criteria');
         setResults([]);
       }
     } catch (error) {
@@ -238,31 +208,20 @@ export default function FindForMeTab({ onAIMessage, onRAGResults }: FindForMeTab
     { code: 'Any', name: 'Any', flag: '🌍' },
   ];
 
+  const getFitColor = (label: string) => {
+    switch (label) {
+      case 'Strong Fit': return { text: 'text-emerald-700', bg: 'bg-emerald-50', border: 'border-emerald-200', ring: 'ring-emerald-500' };
+      case 'Good Fit': return { text: 'text-blue-700', bg: 'bg-blue-50', border: 'border-blue-200', ring: 'ring-blue-500' };
+      case 'Possible Fit': return { text: 'text-amber-700', bg: 'bg-amber-50', border: 'border-amber-200', ring: 'ring-amber-500' };
+      default: return { text: 'text-red-700', bg: 'bg-red-50', border: 'border-red-200', ring: 'ring-red-500' };
+    }
+  };
+
   const getScoreColor = (score: number) => {
     if (score >= 80) return 'text-emerald-600';
     if (score >= 60) return 'text-blue-600';
     if (score >= 40) return 'text-amber-600';
     return 'text-slate-500';
-  };
-
-  const getScoreBg = (score: number) => {
-    if (score >= 80) return 'bg-emerald-500';
-    if (score >= 60) return 'bg-blue-500';
-    if (score >= 40) return 'bg-amber-500';
-    return 'bg-slate-400';
-  };
-
-  const getCategoryColor = (cat: string) => {
-    if (cat === 'Safe') return 'bg-emerald-100 text-emerald-700';
-    if (cat === 'Moderate') return 'bg-amber-100 text-amber-700';
-    return 'bg-red-100 text-red-700';
-  };
-
-  const getScoreRing = (score: number) => {
-    if (score >= 80) return 'ring-emerald-200 bg-emerald-50';
-    if (score >= 60) return 'ring-blue-200 bg-blue-50';
-    if (score >= 40) return 'ring-amber-200 bg-amber-50';
-    return 'ring-slate-200 bg-slate-50';
   };
 
   return (
@@ -271,7 +230,6 @@ export default function FindForMeTab({ onAIMessage, onRAGResults }: FindForMeTab
       <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
         <h2 className="text-lg font-bold text-slate-800 mb-5">Find Universities For Me</h2>
 
-        {/* Optional free text */}
         <textarea
           value={requirements.freeText}
           onChange={(e) => handleChange('freeText', e.target.value)}
@@ -280,7 +238,6 @@ export default function FindForMeTab({ onAIMessage, onRAGResults }: FindForMeTab
           className="w-full px-4 py-2.5 rounded-lg border border-slate-200 focus:border-purple-500 focus:ring-1 focus:ring-purple-500/20 outline-none text-sm text-slate-800 placeholder:text-slate-400 resize-none mb-5"
         />
 
-        {/* Main inputs - 2 rows */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
           <div>
             <label className="block text-xs text-slate-500 mb-1">Degree</label>
@@ -387,43 +344,6 @@ export default function FindForMeTab({ onAIMessage, onRAGResults }: FindForMeTab
           </div>
         </div>
 
-        {/* ML profile fields */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-          <div>
-            <label className="block text-xs text-slate-500 mb-1">Research Experience</label>
-            <select value={requirements.researchExp} onChange={(e) => handleChange('researchExp', e.target.value)}
-              className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white text-slate-800 focus:border-purple-500 outline-none">
-              <option value="0">No</option>
-              <option value="1">Yes</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-xs text-slate-500 mb-1">Extracurricular Level</label>
-            <select value={requirements.ecaLevel} onChange={(e) => handleChange('ecaLevel', e.target.value)}
-              className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white text-slate-800 focus:border-purple-500 outline-none">
-              <option value="0">0 - None</option>
-              <option value="1">1 - Minimal</option>
-              <option value="2">2 - Some</option>
-              <option value="3">3 - Active</option>
-              <option value="4">4 - Strong</option>
-              <option value="5">5 - Exceptional</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-xs text-slate-500 mb-1">GRE Score (optional)</label>
-            <input type="number" value={requirements.gre} onChange={(e) => handleChange('gre', e.target.value)}
-              placeholder="0-340" min={0} max={340}
-              className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm text-slate-800 placeholder:text-slate-400 focus:border-purple-500 outline-none" />
-          </div>
-          <div>
-            <label className="block text-xs text-slate-500 mb-1">SAT Score (optional)</label>
-            <input type="number" value={requirements.sat} onChange={(e) => handleChange('sat', e.target.value)}
-              placeholder="0-1600" min={0} max={1600}
-              className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm text-slate-800 placeholder:text-slate-400 focus:border-purple-500 outline-none" />
-          </div>
-        </div>
-
-        {/* Country pills */}
         <div className="flex flex-wrap gap-2 mb-5">
           {countries.map((c) => (
             <button key={c.code} type="button" onClick={() => handleChange('country', c.code)}
@@ -437,12 +357,11 @@ export default function FindForMeTab({ onAIMessage, onRAGResults }: FindForMeTab
           ))}
         </div>
 
-        {/* Search button */}
         <button onClick={handleFind} disabled={loading}
           className="w-full py-3 rounded-xl bg-purple-600 text-white font-semibold text-sm hover:bg-purple-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2">
           {loading ? (
-            <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> ML Scoring + RAG Enriching...</>
-          ) : 'Find Best Matches (ML + RAG)'}
+            <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Searching...</>
+          ) : 'Find Best Matches'}
         </button>
       </div>
 
@@ -454,203 +373,151 @@ export default function FindForMeTab({ onAIMessage, onRAGResults }: FindForMeTab
             <span className="text-xs text-slate-400">from {totalInDatabase} universities</span>
           </div>
 
-          {/* ML Profile Summary + Category Breakdown */}
-          {mlBase && mlBase.probability > 0 && (
-            <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-3">
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">ML Profile Strength</p>
-              <div className="flex items-center gap-4">
-                <div className="flex-1">
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-sm font-bold text-slate-800">Overall Admission Chance</span>
-                    <span className={`text-sm font-bold ${getScoreColor(mlBase.probability)}`}>{Math.round(mlBase.probability)}%</span>
-                  </div>
-                  <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
-                    <div className={`h-full rounded-full ${getScoreBg(mlBase.probability)}`} style={{ width: `${mlBase.probability}%` }} />
-                  </div>
-                  <p className="text-xs text-slate-500 mt-2">{mlBase.recommendation}</p>
-                </div>
-              </div>
-
-              {/* Category counts */}
-              {categoryCounts && (
-                <div className="flex gap-3 pt-2 border-t border-slate-100">
-                  <div className="flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-emerald-500" />
-                    <span className="text-xs text-slate-600">Safe: <strong>{categoryCounts.safe}</strong></span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-amber-500" />
-                    <span className="text-xs text-slate-600">Moderate: <strong>{categoryCounts.moderate}</strong></span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-red-500" />
-                    <span className="text-xs text-slate-600">Risky: <strong>{categoryCounts.risky}</strong></span>
-                  </div>
-                </div>
-              )}
-
-              {/* Improvement suggestions */}
-              {improvements.length > 0 && (
-                <div className="pt-2 border-t border-slate-100 space-y-1.5">
-                  <span className="text-[11px] text-slate-500 font-medium">Improvement Tips</span>
-                  {improvements.map((imp, i) => (
-                    <div key={i} className="flex items-start gap-1.5">
-                      <span className="text-blue-500 text-xs mt-0.5">+</span>
-                      <span className="text-[11px] text-slate-600"><strong>{imp.action}</strong> — {imp.impact}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
           {results.map((uni, index) => {
-            const gaps = (uni as Record<string, unknown>).gap_analysis as { factor: string; status: string; detail: string }[] || [];
-            const category = (uni as Record<string, unknown>).category as string || '';
+            const checks = uni.requirement_checks || [];
+            const fitColor = getFitColor(uni.fit_label || 'Reach');
+            const passedCount = checks.filter(c => c.passed).length;
+            const isExpanded = expandedCard === index;
+
             return (
-            <div key={index} className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-              {/* Main card */}
-              <div className="p-5">
-                <div className="flex items-start gap-4">
-                  {/* ML admission score */}
-                  <div className={`w-14 h-14 rounded-full ring-2 flex-shrink-0 flex flex-col items-center justify-center ${getScoreRing(uni.match_score)}`}>
-                    <span className={`text-lg font-bold leading-none ${getScoreColor(uni.match_score)}`}>{Math.round(uni.match_score)}</span>
-                    <span className="text-[9px] text-slate-400">%</span>
-                  </div>
-
-                  {/* Info */}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <h4 className="font-bold text-slate-800 text-[15px] leading-tight">{uni.name}</h4>
-                        <p className="text-xs text-slate-500 mt-0.5">{uni.field} &middot; {uni.degree} &middot; {uni.country}</p>
-                      </div>
-                      <div className="flex gap-1.5 flex-shrink-0">
-                        {category && (
-                          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded ${getCategoryColor(category)}`}>{category}</span>
-                        )}
-                        {uni.qs_ranking && (
-                          <span className="text-[10px] font-medium text-slate-500 bg-slate-100 px-2 py-0.5 rounded">QS #{uni.qs_ranking}</span>
-                        )}
-                        {Boolean((uni as Record<string, unknown>).rag_enriched) && (
-                          <span className="text-[10px] font-medium text-blue-500 bg-blue-50 px-2 py-0.5 rounded">RAG</span>
-                        )}
+              <div key={index} className={`bg-white rounded-xl border overflow-hidden transition-all ${isExpanded ? 'border-slate-300 shadow-md' : 'border-slate-200'}`}>
+                {/* Main card */}
+                <div className="p-5">
+                  <div className="flex items-start gap-4">
+                    {/* Match score circle */}
+                    <div className="flex flex-col items-center gap-1.5 flex-shrink-0">
+                      <div className={`w-12 h-12 rounded-full flex flex-col items-center justify-center ${getScoreColor(uni.match_score) === 'text-emerald-600' ? 'bg-emerald-50' : getScoreColor(uni.match_score) === 'text-blue-600' ? 'bg-blue-50' : getScoreColor(uni.match_score) === 'text-amber-600' ? 'bg-amber-50' : 'bg-slate-50'}`}>
+                        <span className={`text-base font-bold leading-none ${getScoreColor(uni.match_score)}`}>{Math.round(uni.match_score)}</span>
+                        <span className="text-[8px] text-slate-400 mt-0.5">match</span>
                       </div>
                     </div>
 
-                    {/* Key stats */}
-                    <div className="flex flex-wrap gap-x-4 gap-y-1 mt-3 text-xs">
-                      <span className="text-slate-700 font-medium">{uni.tuition}</span>
-                      {(uni as Record<string, unknown>).acceptance_rate != null && Number((uni as Record<string, unknown>).acceptance_rate) > 0 && (
-                        <span className="text-slate-600">{String((uni as Record<string, unknown>).acceptance_rate)}% acceptance</span>
-                      )}
-                      {(uni as Record<string, unknown>).min_gpa != null && Number((uni as Record<string, unknown>).min_gpa) > 0 && (
-                        <span className="text-slate-600">GPA {String((uni as Record<string, unknown>).min_gpa)}</span>
-                      )}
-                      {uni.ielts > 0 && (
-                        <span className="text-slate-600">IELTS {uni.ielts}</span>
-                      )}
-                      {Number(uni.work_visa_available) === 1 && (
-                        <span className="text-emerald-600 font-medium">Work Visa</span>
-                      )}
-                      {(uni as Record<string, unknown>).is_preferred === 1 && (
-                        <span className="text-purple-600 font-medium">Preferred Country</span>
-                      )}
-                    </div>
-
-                    {/* Gap analysis tags */}
-                    <div className="flex flex-wrap gap-1.5 mt-2.5">
-                      {gaps.filter(g => g.status === 'strong').slice(0, 2).map((gap, i) => (
-                        <span key={`s-${i}`} className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-600 text-[11px] font-medium">
-                          {gap.detail}
-                        </span>
-                      ))}
-                      {gaps.filter(g => g.status === 'below').map((gap, i) => (
-                        <span key={`b-${i}`} className="px-2 py-0.5 rounded bg-red-50 text-red-600 text-[11px] font-medium">
-                          {gap.detail}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Action buttons */}
-                <div className="flex gap-3 mt-4 pt-3 border-t border-slate-100">
-                  <button onClick={() => setExpandedCard(expandedCard === index ? null : index)}
-                    className="text-xs text-purple-600 hover:text-purple-800 font-medium transition-colors">
-                    {expandedCard === index ? 'Hide details' : 'View details'}
-                  </button>
-                  <button onClick={() => setCostCard(uni)}
-                    className="text-xs text-emerald-600 hover:text-emerald-800 font-medium transition-colors">
-                    Cost breakdown
-                  </button>
-                </div>
-              </div>
-
-              {/* Expanded section */}
-              {expandedCard === index && (
-                <div className="border-t border-slate-100 bg-slate-50 p-5 space-y-5">
-                  {/* Admission Analysis (ML) */}
-                  <div>
-                    <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">ML Admission Analysis</p>
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs text-slate-600">Admission Probability</span>
-                        <span className={`text-sm font-bold ${getScoreColor(uni.match_score)}`}>{Math.round(uni.match_score)}%</span>
+                    {/* Info */}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <h4 className="font-bold text-slate-800 text-[15px] leading-tight">{uni.name}</h4>
+                          <p className="text-xs text-slate-500 mt-0.5">{uni.field} &middot; {uni.country}</p>
+                        </div>
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          {uni.qs_ranking && (
+                            <span className="text-[10px] font-medium text-slate-500 bg-slate-100 px-2 py-0.5 rounded">QS #{uni.qs_ranking}</span>
+                          )}
+                          {uni.fit_label && (
+                            <span className={`text-[10px] font-semibold px-2 py-0.5 rounded ${fitColor.bg} ${fitColor.text} border ${fitColor.border}`}>
+                              {uni.fit_label}
+                            </span>
+                          )}
+                        </div>
                       </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs text-slate-600">Category</span>
-                        <span className={`text-xs font-semibold px-2 py-0.5 rounded ${getCategoryColor(category)}`}>{category}</span>
+
+                      {/* Key info row */}
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2.5 text-xs text-slate-600">
+                        <span className="font-medium text-slate-700">{uni.tuition}</span>
+                        {uni.scholarships && uni.scholarships !== 'N/A' && (
+                          <span className="text-purple-600">Scholarships available</span>
+                        )}
+                        {Number(uni.work_visa_available) === 1 && (
+                          <span className="text-emerald-600">Work visa</span>
+                        )}
                       </div>
-                      {gaps.length > 0 && (
-                        <div className="space-y-1.5 pt-2 border-t border-slate-200">
-                          <span className="text-[11px] text-slate-500">Gap Analysis</span>
-                          {gaps.map((gap, i) => (
-                            <div key={i} className="flex items-start gap-1.5">
-                              <span className={`w-1.5 h-1.5 rounded-full mt-1 flex-shrink-0 ${
-                                gap.status === 'strong' ? 'bg-emerald-500' : gap.status === 'meets' ? 'bg-blue-500' : 'bg-red-500'
-                              }`} />
-                              <span className="text-[11px] text-slate-600">{gap.detail}</span>
-                            </div>
+
+                      {/* Requirement checklist - compact */}
+                      {checks.length > 0 && (
+                        <div className="flex flex-wrap gap-x-4 gap-y-1 mt-3">
+                          {checks.map((check, i) => (
+                            <span key={i} className={`text-xs flex items-center gap-1 ${check.passed ? 'text-emerald-600' : 'text-red-500'}`}>
+                              {check.passed ? (
+                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+                              ) : (
+                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                              )}
+                              <span className="font-medium">{check.label}</span>
+                              <span className="text-slate-400 font-normal">({check.yours} / {check.needs})</span>
+                            </span>
                           ))}
                         </div>
                       )}
                     </div>
                   </div>
 
-                  {/* University details (RAG enriched) */}
-                  <div>
-                    <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">
-                      University Details {(uni as Record<string, unknown>).rag_enriched ? '(RAG Enriched)' : ''}
-                    </p>
-                    <div className="bg-white rounded-lg border border-slate-200 divide-y divide-slate-100">
-                      {[
-                        { label: 'Tuition', value: uni.tuition },
-                        { label: 'Living Cost', value: uni.living_cost ? `$${Number(uni.living_cost).toLocaleString()}/yr` : null },
-                        { label: 'Total Cost', value: uni.total_cost_estimated ? `$${Number(uni.total_cost_estimated).toLocaleString()}/yr` : null },
-                        { label: 'GPA Required', value: (uni as Record<string, unknown>).min_gpa ? String((uni as Record<string, unknown>).min_gpa) : null },
-                        { label: 'Acceptance Rate', value: (uni as Record<string, unknown>).acceptance_rate ? `${(uni as Record<string, unknown>).acceptance_rate}%` : null },
-                        { label: 'English', value: uni.english_requirements || null },
-                        { label: 'Test Requirements', value: uni.test_requirements || null },
-                        { label: 'Scholarships', value: uni.scholarships || null },
-                        { label: 'Max Coverage', value: uni.max_coverage_percent ? `Up to ${uni.max_coverage_percent}%` : null },
-                        { label: 'Program Duration', value: uni.program_duration || null },
-                        { label: 'Work Visa', value: Number(uni.work_visa_available) === 1 ? 'Available' : Number(uni.work_visa_available) === 0 ? 'Not Available' : null },
-                        { label: 'Research Focus', value: uni.research_focus || null },
-                        { label: 'Fall Deadline', value: uni.deadline_fall || null },
-                        { label: 'Spring Deadline', value: uni.deadline_spring || null },
-                      ].filter(item => item.value).map(item => (
-                        <div key={item.label} className="flex items-center justify-between px-4 py-2.5">
-                          <span className="text-xs text-slate-500">{item.label}</span>
-                          <span className="text-xs font-medium text-slate-800 text-right max-w-[60%]">{item.value}</span>
-                        </div>
-                      ))}
+                  {/* Action row */}
+                  <div className="flex items-center gap-3 mt-4 pt-3 border-t border-slate-100">
+                    <button onClick={() => setExpandedCard(isExpanded ? null : index)}
+                      className="text-xs text-purple-600 hover:text-purple-800 font-medium transition-colors">
+                      {isExpanded ? 'Hide details' : 'View details'}
+                    </button>
+                    <button onClick={() => setCostCard(uni)}
+                      className="text-xs text-emerald-600 hover:text-emerald-800 font-medium transition-colors">
+                      Cost breakdown
+                    </button>
+                    <div className="ml-auto text-[10px] text-slate-400">
+                      {passedCount}/{checks.length} requirements met
                     </div>
                   </div>
                 </div>
-              )}
-            </div>
-          );
+
+                {/* Expanded details */}
+                {isExpanded && (
+                  <div className="border-t border-slate-100 bg-slate-50/50 p-5 space-y-5">
+
+                    {/* Gap tips - only show if there are failures */}
+                    {checks.some(c => !c.passed && c.tip) && (
+                      <div className="space-y-2">
+                        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">What to improve</p>
+                        {checks.filter(c => !c.passed && c.tip).map((check, i) => (
+                          <div key={i} className="flex items-start gap-2 px-3 py-2 rounded-lg bg-amber-50 border border-amber-100">
+                            <svg className="w-3.5 h-3.5 text-amber-500 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                            </svg>
+                            <span className="text-xs text-amber-800">{check.tip}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* University details - clean table */}
+                    <div>
+                      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">University Details</p>
+                      <div className="bg-white rounded-lg border border-slate-200 divide-y divide-slate-100">
+                        {[
+                          { label: 'Tuition', value: uni.tuition },
+                          { label: 'GPA Required', value: uni.gpa_required && Number(uni.gpa_required) > 0 ? String(uni.gpa_required) : null },
+                          { label: 'English', value: uni.english_requirements || null },
+                          { label: 'Scholarships', value: uni.scholarships && uni.scholarships !== 'N/A' ? uni.scholarships : null },
+                          { label: 'Max Coverage', value: uni.max_coverage_percent ? `Up to ${uni.max_coverage_percent}%` : null },
+                          { label: 'Program Duration', value: uni.program_duration || null },
+                          { label: 'Work Visa', value: Number(uni.work_visa_available) === 1 ? 'Available' : null },
+                          { label: 'Research Focus', value: uni.research_focus && uni.research_focus !== 'N/A' ? uni.research_focus : null },
+                          { label: 'Fall Deadline', value: uni.deadline_fall && uni.deadline_fall !== 'N/A' ? uni.deadline_fall : null },
+                          { label: 'Spring Deadline', value: uni.deadline_spring && uni.deadline_spring !== 'N/A' ? uni.deadline_spring : null },
+                        ].filter(item => item.value).map(item => (
+                          <div key={item.label} className="flex items-center justify-between px-4 py-2">
+                            <span className="text-xs text-slate-500">{item.label}</span>
+                            <span className="text-xs font-medium text-slate-800 text-right max-w-[60%]">{item.value}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Match reasons */}
+                    {uni.reasons && uni.reasons.length > 0 && (
+                      <div>
+                        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Why this match</p>
+                        <ul className="space-y-1">
+                          {uni.reasons.map((reason, i) => (
+                            <li key={i} className="text-xs text-slate-600 flex items-start gap-1.5">
+                              <span className="text-purple-400 mt-0.5">&#8226;</span>
+                              {reason}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
           })}
 
           {/* Chat section */}
@@ -663,7 +530,6 @@ export default function FindForMeTab({ onAIMessage, onRAGResults }: FindForMeTab
                   `Why ${results[0]?.name}?`,
                   'Compare top 3',
                   'Which is best for me?',
-                  'Suggest universities not shown',
                   'How can I improve my chances?',
                   'Which has best scholarships?',
                 ].map((chip) => (
@@ -688,14 +554,12 @@ export default function FindForMeTab({ onAIMessage, onRAGResults }: FindForMeTab
                           : 'bg-white border border-slate-200 text-slate-700'
                       }`}>
                         {msg.sender === 'ai' && isStreaming && isEmpty ? (
-                          /* Typing dots while waiting for first token */
                           <span className="flex gap-1 items-center py-0.5">
                             <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce" style={{ animationDelay: '0ms' }} />
                             <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce" style={{ animationDelay: '150ms' }} />
                             <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce" style={{ animationDelay: '300ms' }} />
                           </span>
                         ) : (
-                          /* Message text + blinking cursor while streaming */
                           <>
                             {msg.text}
                             {isStreaming && !isEmpty && (
@@ -716,7 +580,6 @@ export default function FindForMeTab({ onAIMessage, onRAGResults }: FindForMeTab
                 value={chatInput}
                 onChange={(e) => {
                   setChatInput(e.target.value);
-                  // Auto-grow: reset height then set to scrollHeight
                   e.target.style.height = 'auto';
                   e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
                 }}
@@ -724,7 +587,6 @@ export default function FindForMeTab({ onAIMessage, onRAGResults }: FindForMeTab
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
                     handleChatSend();
-                    // Reset height after send
                     (e.target as HTMLTextAreaElement).style.height = 'auto';
                   }
                 }}
@@ -736,7 +598,6 @@ export default function FindForMeTab({ onAIMessage, onRAGResults }: FindForMeTab
               />
               <button onClick={() => {
                 handleChatSend();
-                // Find and reset textarea height
                 const ta = document.querySelector('.flex.gap-2.items-end textarea') as HTMLTextAreaElement;
                 if (ta) ta.style.height = 'auto';
               }}
@@ -757,6 +618,8 @@ export default function FindForMeTab({ onAIMessage, onRAGResults }: FindForMeTab
           country={costCard.country}
           tuition={costCard.tuition}
           programDuration={costCard.program_duration}
+          scholarships={costCard.scholarships}
+          maxCoverage={costCard.max_coverage_percent}
           onClose={() => setCostCard(null)}
         />
       )}

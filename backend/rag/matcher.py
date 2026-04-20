@@ -67,20 +67,20 @@ class UniversityMatcher:
     """
 
     # Weights for final score calculation
-    SEMANTIC_WEIGHT = 0.30   # 30% from meaning similarity (vector + BM25 fused)
+    SEMANTIC_WEIGHT = 0.25   # 25% from meaning similarity (vector + BM25 fused)
     RERANK_WEIGHT = 0.05     # 5% from cross-encoder re-ranking confidence
-    CRITERIA_WEIGHT = 0.65   # 65% from practical criteria (increased — we have richer data now)
+    CRITERIA_WEIGHT = 0.70   # 70% from practical criteria
 
-    # Breakdown of criteria weights (must sum to CRITERIA_WEIGHT = 0.65)
+    # Breakdown of criteria weights (must sum to CRITERIA_WEIGHT = 0.70)
     BUDGET_WEIGHT = 0.12     # 12% - Total cost fit (tuition + living)
     GPA_WEIGHT = 0.10        # 10% - Are you qualified?
-    FIELD_WEIGHT = 0.08      # 8% - Exact field match?
-    ENGLISH_WEIGHT = 0.05    # 5% - Do you meet English requirements?
-    SCHOLARSHIP_WEIGHT = 0.05  # 5% - Scholarships available? (uses max_coverage_percent)
-    QS_RANKING_WEIGHT = 0.10  # 10% - QS World University Ranking
-    ACCEPTANCE_WEIGHT = 0.08  # 8% - Realistic admission chance based on acceptance rate
+    FIELD_WEIGHT = 0.20      # 20% - Field match (most important filter)
+    ENGLISH_WEIGHT = 0.06    # 6% - Do you meet English requirements?
+    SCHOLARSHIP_WEIGHT = 0.05  # 5% - Scholarships available?
+    QS_RANKING_WEIGHT = 0.08  # 8% - QS World University Ranking
+    ACCEPTANCE_WEIGHT = 0.00  # 0% - Display only, not used in scoring
     WORK_VISA_WEIGHT = 0.04  # 4% - Work visa availability for international students
-    RESEARCH_WEIGHT = 0.03   # 3% - Research fit for the student
+    RESEARCH_WEIGHT = 0.05   # 5% - Research fit for the student
 
     def __init__(self, embedder: Embedder = None, vector_store: VectorStore = None):
         """
@@ -137,7 +137,7 @@ class UniversityMatcher:
         """
         print(f"\nFinding matches for: {preferences}")
 
-        fetch_k = max(top_k * 5, 30)  # Get more candidates for re-ranking
+        fetch_k = max(top_k * 10, 50)  # Get more candidates to find field matches
 
         # --- Step 1: Vector search (ChromaDB cosine) ---
         query_embedding = self.embedder.embed_user_query(preferences)
@@ -193,13 +193,17 @@ class UniversityMatcher:
         reranked = self.reranker.rerank(query_text, fused_candidates, top_k=fetch_k)
         print(f"Re-ranked {len(reranked)} candidates")
 
-        # --- Step 5: Criteria scoring + final score ---
+        # --- Step 5: Detect user priorities from free text → dynamic weights ---
+        dynamic_weights = self._detect_user_priorities(preferences)
+        print(f"Dynamic weights: {dynamic_weights}")
+
+        # --- Step 6: Criteria scoring + final score ---
         scored_results = []
         for candidate in reranked:
             metadata = candidate['metadata']
 
-            # Calculate criteria scores
-            scores = self._calculate_criteria_scores(preferences, metadata)
+            # Calculate criteria scores with dynamic weights
+            scores = self._calculate_criteria_scores(preferences, metadata, dynamic_weights)
 
             # Combine semantic, re-rank, and criteria scores
             semantic_score = candidate['similarity']
@@ -211,6 +215,15 @@ class UniversityMatcher:
                 rerank_score * self.RERANK_WEIGHT +
                 criteria_score * self.CRITERIA_WEIGHT
             )
+
+            # Hard penalty for WRONG FIELD
+            user_field = preferences.get('field', '').lower()
+            uni_field = (metadata.get('field', '') or '').lower()
+            if user_field and uni_field:
+                if scores['field'] <= 0.3:
+                    final_score *= 0.15  # 85% penalty for completely unrelated field
+                elif scores['field'] <= 0.6:
+                    final_score *= 0.6   # 40% penalty for only loosely related field
 
             # Apply hard penalty for over-budget universities (tuition only)
             user_budget = preferences.get('budget', 0)
@@ -247,6 +260,8 @@ class UniversityMatcher:
                 'qs_ranking': metadata.get('qs_ranking', ''),
                 # New unified fields from ML dataset
                 'acceptance_rate': metadata.get('acceptance_rate', 0),
+                'fit_label': self._get_student_fit_label(scores),
+                'requirement_checks': self._build_requirement_checks(preferences, metadata, scores),
                 'living_cost': metadata.get('living_cost', 0),
                 'total_cost_estimated': metadata.get('total_cost_estimated', 0),
                 'scholarship_available': metadata.get('scholarship_available', 0),
@@ -274,10 +289,183 @@ class UniversityMatcher:
                 'reasons': self._generate_match_reasons(preferences, metadata, scores)
             })
 
-        # Step 6: Sort by final score and return top_k
+        # Step 7: Sort by final score
         scored_results.sort(key=lambda x: x['match_percentage'], reverse=True)
 
-        return scored_results[:top_k]
+        # Step 8: Deduplicate — keep best entry per university name
+        seen = set()
+        unique_results = []
+        for r in scored_results:
+            uni_name = r['university'].strip().lower()
+            if uni_name not in seen:
+                seen.add(uni_name)
+                unique_results.append(r)
+
+        return unique_results[:top_k]
+
+    @staticmethod
+    def _fuzzy_word_match(text: str, keywords: list, threshold: int = 2) -> bool:
+        """Check if any word in text is close to any keyword.
+
+        Uses simple edit-distance-like matching:
+        1. Exact substring match (handles phrases like 'low cost')
+        2. Word-level match: if a word in text starts the same as a keyword
+           or differs by at most `threshold` characters (handles typos)
+
+        Examples that match 'affordable':
+          'affordable' → exact
+          'affortable' → 1 char off
+          'afordable'  → 1 char off
+          'budget friendly' → matches 'budget'
+          'bdget friendly'  → 'bdget' is close to 'budget' (1 char off)
+          'scholership'     → close to 'scholarship' (1 char off)
+        """
+        # First: exact phrase match (handles multi-word keywords like 'low cost')
+        for kw in keywords:
+            if kw in text:
+                return True
+
+        # Second: word-level fuzzy match for single-word keywords
+        text_words = text.split()
+        single_keywords = [kw for kw in keywords if ' ' not in kw]
+
+        for word in text_words:
+            for kw in single_keywords:
+                # Exact word match
+                if word == kw:
+                    return True
+                # Prefix match (word starts same as keyword, at least 4 chars)
+                if len(word) >= 4 and len(kw) >= 4 and word[:4] == kw[:4]:
+                    return True
+                # Length-aware fuzzy: if similar length, count mismatches
+                if abs(len(word) - len(kw)) <= 2 and len(word) >= 4:
+                    # Simple character diff count
+                    shorter = min(len(word), len(kw))
+                    diffs = abs(len(word) - len(kw))
+                    for i in range(shorter):
+                        if word[i] != kw[i]:
+                            diffs += 1
+                    if diffs <= threshold:
+                        return True
+                # Subsequence match: handles missing-letter typos like 'bdget'→'budget'
+                # If 80%+ of the word's chars appear in order in the keyword (or vice versa)
+                if len(word) >= 4 and len(kw) >= 4:
+                    shorter_str, longer_str = (word, kw) if len(word) <= len(kw) else (kw, word)
+                    j = 0
+                    matched = 0
+                    for ch in shorter_str:
+                        while j < len(longer_str):
+                            if longer_str[j] == ch:
+                                matched += 1
+                                j += 1
+                                break
+                            j += 1
+                    if matched >= len(shorter_str) * 0.8:
+                        return True
+
+        return False
+
+    def _detect_user_priorities(self, preferences: Dict) -> Dict[str, float]:
+        """Detect what the user cares about from free_text and return adjusted weights.
+
+        Uses fuzzy matching so typos like 'bdget', 'scholership', 'affortable'
+        still trigger the right priority adjustments.
+        """
+        free_text = (preferences.get('free_text') or '').lower()
+
+        # Start with default weights
+        weights = {
+            'budget': self.BUDGET_WEIGHT,
+            'gpa': self.GPA_WEIGHT,
+            'field': self.FIELD_WEIGHT,
+            'english': self.ENGLISH_WEIGHT,
+            'scholarship': self.SCHOLARSHIP_WEIGHT,
+            'qs_ranking': self.QS_RANKING_WEIGHT,
+            'acceptance': self.ACCEPTANCE_WEIGHT,
+            'work_visa': self.WORK_VISA_WEIGHT,
+            'research': self.RESEARCH_WEIGHT,
+        }
+
+        if not free_text:
+            return weights
+
+        fm = self._fuzzy_word_match
+
+        # --- Budget priority ---
+        cheap_kw = ['affordable', 'cheap', 'budget', 'inexpensive', 'economical',
+                     'low cost', 'low tuition', 'low budget', 'cost effective',
+                     'budget friendly', 'not expensive', 'save money', 'less expensive']
+        expensive_kw = ['expensive', 'premium', 'luxury',
+                        "money doesn't matter", 'money doesnt matter',
+                        "budget doesn't matter", 'budget doesnt matter',
+                        "cost doesn't matter", 'cost doesnt matter',
+                        'any budget', 'no budget limit', 'price not important',
+                        'cost not important', 'regardless of cost']
+
+        if fm(free_text, cheap_kw):
+            weights['budget'] = 0.22
+            weights['qs_ranking'] = 0.04
+        elif fm(free_text, expensive_kw):
+            weights['budget'] = 0.02
+            weights['qs_ranking'] = 0.18
+
+        # --- QS Ranking priority ---
+        ranking_kw = ['prestigious', 'elite', 'renowned', 'famous', 'reputed',
+                      'top ranked', 'top ranking', 'best ranked', 'high ranking',
+                      'highly ranked', 'world class', 'world renowned',
+                      'top university', 'top universities',
+                      'best university', 'best universities',
+                      'ranking matters', 'qs ranking', 'ranking important',
+                      'good ranking', 'well ranked',
+                      'rank', 'ranking', 'ranked', 'varsity rank',
+                      'university rank', 'uni rank', 'higher rank',
+                      'rank matters', 'better rank', 'good rank']
+        if fm(free_text, ranking_kw):
+            weights['qs_ranking'] = 0.25
+            weights['budget'] = 0.06
+            weights['acceptance'] = 0.02
+
+        # --- Scholarship priority ---
+        scholarship_kw = ['scholarship', 'funding', 'funded', 'stipend',
+                          'assistantship', 'fellowship', 'grant',
+                          'financial aid', 'financial support',
+                          'tuition waiver', 'free tuition', 'tuition free',
+                          'need based', 'merit based']
+        if fm(free_text, scholarship_kw):
+            weights['scholarship'] = 0.15
+
+        # --- Research priority ---
+        research_kw = ['research', 'lab', 'laboratory', 'publication', 'publish',
+                       'thesis', 'dissertation', 'phd prep', 'academic',
+                       'research focused', 'research opportunity', 'research output',
+                       'professor', 'faculty', 'innovation']
+        if fm(free_text, research_kw):
+            weights['research'] = 0.14
+
+        # --- Acceptance / easy admission priority ---
+        acceptance_kw = ['easy', 'safe', 'guaranteed', 'acceptance',
+                         'easy to get in', 'high acceptance', 'safe choice',
+                         'safe option', 'easy admission', 'less competitive',
+                         'not competitive', 'good chance', 'sure admit',
+                         'backup', 'safety school']
+        if fm(free_text, acceptance_kw):
+            weights['acceptance'] = 0.16
+
+        # --- Work visa priority ---
+        visa_kw = ['visa', 'immigration', 'immigrate', 'settle', 'relocate',
+                   'work visa', 'work after', 'stay after', 'post study work',
+                   'work permit', 'permanent resident', 'residency',
+                   'work abroad', 'job after', 'employment after']
+        if fm(free_text, visa_kw):
+            weights['work_visa'] = 0.14
+
+        # Normalize weights to sum to CRITERIA_WEIGHT
+        total = sum(weights.values())
+        if total > 0:
+            scale = self.CRITERIA_WEIGHT / total
+            weights = {k: v * scale for k, v in weights.items()}
+
+        return weights
 
     def _rebuild_bm25_index(self):
         """Build (or rebuild) the BM25 index from current vector store contents."""
@@ -341,7 +529,7 @@ class UniversityMatcher:
         sorted_ids = sorted(rrf_scores.keys(), key=lambda d: rrf_scores[d], reverse=True)
         return sorted_ids
 
-    def _calculate_criteria_scores(self, preferences: Dict, university: Dict) -> Dict[str, float]:
+    def _calculate_criteria_scores(self, preferences: Dict, university: Dict, dynamic_weights: Dict[str, float] = None) -> Dict[str, float]:
         """
         Calculate individual criteria scores.
 
@@ -543,29 +731,11 @@ class UniversityMatcher:
         else:
             scores['qs_ranking'] = 0.2
 
-        # ACCEPTANCE RATE (8%) — realistic admission chances
-        acceptance_rate = university.get('acceptance_rate', 0) or 0
-        if isinstance(acceptance_rate, str):
-            try:
-                acceptance_rate = float(acceptance_rate)
-            except (ValueError, TypeError):
-                acceptance_rate = 0
-
-        user_gpa_for_acc = preferences.get('gpa', 0)
-        if not acceptance_rate:
-            scores['acceptance'] = 0.5  # No data — neutral
-        elif acceptance_rate >= 50:
-            scores['acceptance'] = 1.0  # Easy to get in
-        elif acceptance_rate >= 30:
-            scores['acceptance'] = 0.85
-        elif acceptance_rate >= 20:
-            # Moderate — boost if student has strong GPA
-            scores['acceptance'] = 0.75 if user_gpa_for_acc >= 3.5 else 0.6
-        elif acceptance_rate >= 10:
-            scores['acceptance'] = 0.6 if user_gpa_for_acc >= 3.7 else 0.4
-        else:
-            # Very competitive (<10%)
-            scores['acceptance'] = 0.5 if user_gpa_for_acc >= 3.8 else 0.25
+        # ACCEPTANCE RATE — display only, neutral score
+        # Low acceptance = prestigious but harder. High acceptance = easier but less selective.
+        # Neither is better — it's information for the student, not a ranking factor.
+        # (User can still boost this via free text like "easy to get in" → dynamic weights)
+        scores['acceptance'] = 0.5
 
         # WORK VISA (4%) — important for international students
         work_visa = university.get('work_visa_available', 0)
@@ -593,32 +763,112 @@ class UniversityMatcher:
         else:
             scores['research'] = 0.4
 
-        # Calculate weighted total criteria score
-        # Boost budget weight when user has clear budget intent
-        budget_w = self.BUDGET_WEIGHT
-        qs_w = self.QS_RANKING_WEIGHT
-        if budget_intent == 'cheap':
-            # Boost budget weight, reduce QS ranking weight
-            budget_w = 0.24
-            qs_w = 0.04
-        elif budget_intent == 'expensive':
-            # Reduce budget weight, boost QS ranking
-            budget_w = 0.04
-            qs_w = 0.20
+        # Calculate weighted total criteria score using dynamic weights
+        w = dynamic_weights if dynamic_weights else {
+            'budget': self.BUDGET_WEIGHT, 'gpa': self.GPA_WEIGHT,
+            'field': self.FIELD_WEIGHT, 'english': self.ENGLISH_WEIGHT,
+            'scholarship': self.SCHOLARSHIP_WEIGHT, 'qs_ranking': self.QS_RANKING_WEIGHT,
+            'acceptance': self.ACCEPTANCE_WEIGHT, 'work_visa': self.WORK_VISA_WEIGHT,
+            'research': self.RESEARCH_WEIGHT,
+        }
 
         scores['total_criteria'] = (
-            scores['budget'] * (budget_w / self.CRITERIA_WEIGHT) +
-            scores['gpa'] * (self.GPA_WEIGHT / self.CRITERIA_WEIGHT) +
-            scores['field'] * (self.FIELD_WEIGHT / self.CRITERIA_WEIGHT) +
-            scores['english'] * (self.ENGLISH_WEIGHT / self.CRITERIA_WEIGHT) +
-            scores['scholarship'] * (self.SCHOLARSHIP_WEIGHT / self.CRITERIA_WEIGHT) +
-            scores['qs_ranking'] * (qs_w / self.CRITERIA_WEIGHT) +
-            scores['acceptance'] * (self.ACCEPTANCE_WEIGHT / self.CRITERIA_WEIGHT) +
-            scores['work_visa'] * (self.WORK_VISA_WEIGHT / self.CRITERIA_WEIGHT) +
-            scores['research'] * (self.RESEARCH_WEIGHT / self.CRITERIA_WEIGHT)
+            scores['budget'] * (w['budget'] / self.CRITERIA_WEIGHT) +
+            scores['gpa'] * (w['gpa'] / self.CRITERIA_WEIGHT) +
+            scores['field'] * (w['field'] / self.CRITERIA_WEIGHT) +
+            scores['english'] * (w['english'] / self.CRITERIA_WEIGHT) +
+            scores['scholarship'] * (w['scholarship'] / self.CRITERIA_WEIGHT) +
+            scores['qs_ranking'] * (w['qs_ranking'] / self.CRITERIA_WEIGHT) +
+            scores['acceptance'] * (w['acceptance'] / self.CRITERIA_WEIGHT) +
+            scores['work_visa'] * (w['work_visa'] / self.CRITERIA_WEIGHT) +
+            scores['research'] * (w['research'] / self.CRITERIA_WEIGHT)
         )
 
         return scores
+
+    @staticmethod
+    def _get_student_fit_label(scores: dict) -> str:
+        """Label based on how well the student meets this university's requirements."""
+        checks = [
+            scores.get('field', 0) >= 0.7,    # field match
+            scores.get('budget', 0) >= 0.7,   # within budget
+            scores.get('gpa', 0) >= 0.7,      # meets GPA
+            scores.get('english', 0) >= 0.7,  # meets English req
+        ]
+        passed = sum(checks)
+        if passed == 4:
+            return 'Strong Fit'
+        if passed == 3:
+            return 'Good Fit'
+        if passed == 2:
+            return 'Possible Fit'
+        return 'Reach'
+
+    @staticmethod
+    def _build_requirement_checks(preferences: dict, metadata: dict, scores: dict) -> list:
+        """Build a checklist of requirement pass/fail for the student."""
+        checks = []
+
+        # Field match
+        uni_field = metadata.get('field', '')
+        student_field = preferences.get('field', '')
+        passed = scores.get('field', 0) >= 0.7
+        checks.append({
+            'label': 'Field',
+            'passed': passed,
+            'yours': student_field,
+            'needs': uni_field,
+            'tip': f'This program is in {uni_field}' if not passed and uni_field else None,
+        })
+
+        # GPA
+        uni_gpa = float(metadata.get('gpa_requirement', 0) or 0)
+        student_gpa = float(preferences.get('gpa', 0) or 0)
+        passed = scores.get('gpa', 0) >= 0.7
+        if uni_gpa > 0 and student_gpa > 0:
+            gap = round(uni_gpa - student_gpa, 2)
+            checks.append({
+                'label': 'GPA',
+                'passed': passed,
+                'yours': str(student_gpa),
+                'needs': str(uni_gpa),
+                'tip': f'GPA is {gap} below requirement' if not passed and gap > 0 else None,
+            })
+
+        # Budget
+        uni_tuition = float(metadata.get('tuition_fees', 0) or 0)
+        student_budget = float(preferences.get('budget', 0) or 0)
+        passed = scores.get('budget', 0) >= 0.7
+        if student_budget > 0 and uni_tuition > 0:
+            over = round(uni_tuition - student_budget)
+            checks.append({
+                'label': 'Budget',
+                'passed': passed,
+                'yours': f'${student_budget:,.0f}',
+                'needs': f'${uni_tuition:,.0f}',
+                'tip': f'${over:,.0f} over budget — check scholarships' if not passed and over > 0 else None,
+            })
+
+        # English
+        student_test = preferences.get('english_test', '')
+        student_score = float(preferences.get('english_score', 0) or 0)
+        passed = scores.get('english', 0) >= 0.7
+        if student_test and student_score > 0:
+            if student_test.upper() == 'IELTS':
+                uni_score = float(metadata.get('ielts', 0) or 0)
+            else:
+                uni_score = float(metadata.get('toefl', 0) or 0)
+            if uni_score > 0:
+                gap = round(uni_score - student_score, 1)
+                checks.append({
+                    'label': student_test.upper(),
+                    'passed': passed,
+                    'yours': str(student_score),
+                    'needs': str(uni_score),
+                    'tip': f'{abs(gap)} points short — consider retaking' if not passed and gap > 0 else None,
+                })
+
+        return checks
 
     def _fields_related(self, field1: str, field2: str) -> bool:
         """Check if two fields are related."""

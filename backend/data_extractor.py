@@ -10,7 +10,13 @@ import os
 import json
 import re
 from datetime import datetime
-from mongodb_handler import MongoDBHandler
+
+# Try to import MongoDB — optional dependency
+try:
+    from mongodb_handler import MongoDBHandler
+    _MONGO_AVAILABLE = True
+except ImportError:
+    _MONGO_AVAILABLE = False
 
 
 class DataExtractor:
@@ -18,7 +24,14 @@ class DataExtractor:
 
     def __init__(self, claude_path="claude.cmd"):
         self.claude_path = claude_path
-        self.db = MongoDBHandler()
+        self.db = None
+        if _MONGO_AVAILABLE:
+            try:
+                self.db = MongoDBHandler()
+                # Quick ping to verify connection
+                self.db.client.admin.command('ping')
+            except Exception:
+                self.db = None
 
         # Map common questions to query types
         self.query_type_map = {
@@ -151,36 +164,39 @@ class DataExtractor:
         """
         query_type = self.detect_query_type(question)
 
-        # SMART CACHE: First check for related fields in database
-        smart_cached = self.find_related_cached_data(university, degree, field, question)
-        if smart_cached:
-            # Format the cached data nicely
-            parts = []
-            for k, v in smart_cached.items():
-                if k != "data_year":
-                    parts.append(f"{k.replace('_', ' ').title()}: {v}")
-            formatted = " | ".join(parts)
-            return {
-                "source": "cache",
-                "query_type": query_type,
-                "key_data": formatted,
-                "full_response": "From database: " + formatted,
-                "cached_at": None,
-                "data_year": smart_cached.get("data_year")
-            }
+        # SMART CACHE: First check for related fields in database (only if MongoDB available)
+        if self.db:
+            try:
+                smart_cached = self.find_related_cached_data(university, degree, field, question)
+                if smart_cached:
+                    parts = []
+                    for k, v in smart_cached.items():
+                        if k != "data_year":
+                            parts.append(f"{k.replace('_', ' ').title()}: {v}")
+                    formatted = " | ".join(parts)
+                    return {
+                        "source": "cache",
+                        "query_type": query_type,
+                        "key_data": formatted,
+                        "full_response": "From database: " + formatted,
+                        "cached_at": None,
+                        "data_year": smart_cached.get("data_year")
+                    }
 
-        # Fallback: exact field match
-        cached = self.db.find_data(university, degree, field, query_type)
-        if cached["found"]:
-            return {
-                "source": "cache",
-                "query_type": query_type,
-                "key_data": cached["data"],
-                "full_response": f"From database: {cached['data']}",
-                "cached_at": cached["updated_at"].isoformat() if cached["updated_at"] else None
-            }
+                # Fallback: exact field match
+                cached = self.db.find_data(university, degree, field, query_type)
+                if cached["found"]:
+                    return {
+                        "source": "cache",
+                        "query_type": query_type,
+                        "key_data": cached["data"],
+                        "full_response": f"From database: {cached['data']}",
+                        "cached_at": cached["updated_at"].isoformat() if cached["updated_at"] else None
+                    }
+            except Exception:
+                pass  # MongoDB failed — fall through to Claude
 
-        # NOT IN CACHE - Fetch ALL 7 data points at once (more efficient)
+        # NOT IN CACHE (or no MongoDB) - Fetch ALL 7 data points at once
         # This way one search stores everything for future queries
         all_data_result = self._fetch_and_store_all_data(university, degree, field)
 
@@ -263,10 +279,14 @@ class DataExtractor:
         official_name = extracted_data.pop("official_name", None)
         store_university = official_name if official_name else university
 
-        # Store ALL fields in database (all go to same document)
-        for field_name, value in extracted_data.items():
-            if value:  # Only store if value exists
-                self.db.store_data(store_university, degree, field, field_name, value)
+        # Store ALL fields in database if available
+        if self.db:
+            try:
+                for field_name, value in extracted_data.items():
+                    if value:
+                        self.db.store_data(store_university, degree, field, field_name, value)
+            except Exception:
+                pass  # MongoDB not available — skip caching
 
         return {
             "source": "claude",
@@ -326,6 +346,9 @@ Now search and give ONLY the key data:"""
 
             try:
                 command = f'type "{temp_file}" | {self.claude_path} --print --dangerously-skip-permissions'
+                # Clear CLAUDECODE env var to allow nested CLI calls
+                env = os.environ.copy()
+                env.pop('CLAUDECODE', None)
                 result = subprocess.run(
                     command,
                     capture_output=True,
@@ -333,7 +356,8 @@ Now search and give ONLY the key data:"""
                     shell=True,
                     timeout=180,
                     encoding='utf-8',
-                    errors='ignore'
+                    errors='ignore',
+                    env=env,
                 )
             finally:
                 try:
@@ -396,37 +420,29 @@ Now search and give ONLY the key data:"""
 
     def get_cached_data(self, university, degree, field):
         """Get all cached data for a university program"""
+        if not self.db:
+            return None
         return self.db.find_program_all_data(university, degree, field)
 
     def fetch_all_data(self, university, degree, field):
-        """
-        Fetch ALL 7 key data points at once from Claude and store together.
+        """Fetch ALL 7 key data points at once from Claude and store together."""
+        # First check if we already have complete data in MongoDB
+        if self.db:
+            try:
+                cached = self.db.find_program_all_data(university, degree, field)
+                required_fields = ['tuition_fees', 'deadline_spring', 'deadline_summer', 'deadline_fall', 'english_requirements',
+                                  'gpa_requirement', 'test_requirements', 'scholarships', 'program_duration']
+                if cached and all(f in cached for f in required_fields):
+                    return {
+                        "source": "cache",
+                        "data": cached,
+                        "full_response": "All data from database"
+                    }
+            except Exception:
+                pass
 
-        Returns all data in one document:
-        - tuition_fees
-        - deadline_spring, deadline_summer, deadline_fall
-        - english_requirements
-        - gpa_requirement
-        - test_requirements (GRE/GMAT)
-        - scholarships
-        - program_duration
-        """
-        # First check if we already have complete data
-        cached = self.db.find_program_all_data(university, degree, field)
-        required_fields = ['tuition_fees', 'deadline_spring', 'deadline_summer', 'deadline_fall', 'english_requirements',
-                          'gpa_requirement', 'test_requirements', 'scholarships', 'program_duration']
-
-        # Check if all 7 fields exist
-        if cached and all(f in cached for f in required_fields):
-            return {
-                "source": "cache",
-                "data": cached,
-                "full_response": "All data from database"
-            }
-
-        # Not complete in cache - ask Claude for ALL data at once
+        # Not in cache (or no MongoDB) - ask Claude for ALL data at once
         prompt = self._build_all_data_prompt(university, degree, field)
-
         response = self._send_to_claude(prompt)
 
         if not response["success"]:
@@ -436,26 +452,25 @@ Now search and give ONLY the key data:"""
                 "full_response": response.get("error", "Unknown error")
             }
 
-        # Parse the response to extract all 7 fields (short data for storage)
         extracted_data = self._parse_all_data(response["text"])
-
-        # Get descriptive part for display
         descriptive_response = self._get_descriptive_part(response["text"])
-
-        # Use official university name if Claude found it
         official_name = extracted_data.pop("official_name", None)
         store_university = official_name if official_name else university
-        
-        # Store each field in database (all go to same document)
-        for field_name, value in extracted_data.items():
-            if value:  # Only store if value exists
-                self.db.store_data(store_university, degree, field, field_name, value)
+
+        # Store in MongoDB if available
+        if self.db:
+            try:
+                for field_name, value in extracted_data.items():
+                    if value:
+                        self.db.store_data(store_university, degree, field, field_name, value)
+            except Exception:
+                pass
 
         return {
             "source": "claude",
             "data": extracted_data,
-            "official_name": store_university,  # Corrected university name
-            "descriptive": descriptive_response,  # Easy-to-read explanation
+            "official_name": store_university,
+            "descriptive": descriptive_response,
             "full_response": response["text"]
         }
 
@@ -587,22 +602,27 @@ Use "N/A" if information not found. Now search and provide the information:"""
         official_name = extracted_data.pop("official_name", None)
         store_university = official_name if official_name else university
         
-        # Store each field in database (replaces old data)
-        for field_name, value in extracted_data.items():
-            if value:  # Only store if value exists
-                self.db.store_data(store_university, degree, field, field_name, value)
+        # Store in MongoDB if available
+        if self.db:
+            try:
+                for field_name, value in extracted_data.items():
+                    if value:
+                        self.db.store_data(store_university, degree, field, field_name, value)
+            except Exception:
+                pass
 
         return {
             "source": "claude",
             "data": extracted_data,
-            "official_name": store_university,  # Corrected university name
+            "official_name": store_university,
             "descriptive": descriptive_response,
             "full_response": response["text"]
         }
 
     def close(self):
         """Close database connection"""
-        self.db.close()
+        if self.db:
+            self.db.close()
 
 
 # Example usage

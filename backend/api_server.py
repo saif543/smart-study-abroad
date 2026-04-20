@@ -53,7 +53,7 @@ app = Flask(__name__)
 CORS(app)
 
 def get_extractor():
-    return DataExtractor(claude_path="claude.cmd")
+    return DataExtractor(claude_path="claude")
 
 def get_db():
     return MongoDBHandler()
@@ -95,14 +95,17 @@ def search():
             'query_type': result.get('query_type')
         }
 
-        # If from cache, get all data from DB
+        # If from cache, get all data from DB (only if MongoDB available)
         if result.get('source') == 'cache' and not response['data']:
-            db = get_db()
-            all_data = db.find_program_all_data(university, degree, field)
-            db.close()
-            if all_data:
-                response['data'] = all_data
-                response['data_year'] = all_data.get('data_year')
+            try:
+                db = get_db()
+                all_data = db.find_program_all_data(university, degree, field)
+                db.close()
+                if all_data:
+                    response['data'] = all_data
+                    response['data_year'] = all_data.get('data_year')
+            except Exception:
+                pass  # MongoDB not available
 
         return jsonify(response)
     except Exception as e:
@@ -138,14 +141,14 @@ def fetch_all():
 
 @app.route('/api/findme', methods=['POST'])
 def find_for_me():
-    """Find universities: ML scores all 232 -> RAG enriches top results.
+    """Find universities using RAG semantic search.
 
-    Pipeline (Option B):
-    1. ML (GradientBoosting) predicts match scores for ALL 232 universities
-    2. Take top results ranked by admission probability
-    3. RAG (ChromaDB) enriches each with detailed info:
-       deadlines, scholarships, research focus, program details, etc.
-    4. Return combined ML scores + RAG enrichment
+    Pipeline:
+    1. ChromaDB vector search (cosine similarity)
+    2. BM25 keyword search
+    3. Reciprocal Rank Fusion (merges both)
+    4. Cross-encoder re-ranking
+    5. Criteria scoring (budget, GPA, field, English, scholarships)
     """
     try:
         data = request.json
@@ -154,120 +157,70 @@ def find_for_me():
         if not field:
             return jsonify({'error': 'Please provide a field of study'})
 
-        if ml_predictor is None:
-            return jsonify({'error': 'ML predictor not loaded. Please restart the server.'}), 503
+        if rag_matcher is None:
+            return jsonify({'error': 'RAG matcher not loaded. Please restart the server.'}), 503
 
-        # --- Step 1: Build student profile for ML ---
-        english_test = data.get('englishTest', 'TOEFL')
-        english_score = data.get('englishScore', '')
+        # Build preferences for RAG matcher
         country = data.get('country', '')
-
-        student_profile = {
-            'gpa': float(data.get('minGPA') or 0),
-            'ielts': float(english_score or 0) if english_test == 'IELTS' else 0,
-            'gre': float(data.get('gre') or 0),
-            'sat': float(data.get('sat') or 0),
-            'research_exp': 1 if data.get('researchExp') in ('Yes', '1', 1, True) else 0,
-            'eca_level': int(data.get('ecaLevel') or 0),
-            'budget': float(data.get('maxTuition') or 0),
+        preferences = {
             'field': field,
-            'preferred_country': country if country and country != 'Any' else '',
+            'degree': data.get('degree', 'Master'),
+            'budget': float(data.get('maxTuition') or 0),
+            'gpa': float(data.get('minGPA') or 0),
+            'english_test': data.get('englishTest', ''),
+            'english_score': data.get('englishScore', ''),
+            'prefer_scholarship': data.get('preferScholarship', False),
+            'free_text': data.get('freeText', ''),
         }
+        if country and country != 'Any':
+            preferences['country'] = country
 
         top_k = int(data.get('top_k', 5))
 
-        # --- Step 2: ML scores ALL 232 universities ---
-        # Get top_k for display, but top 30 for chat context (so LLM knows more universities)
-        chat_k = max(top_k, 30)
-        ml_result = ml_predictor.match_top_universities(student_profile, top_k=chat_k)
+        # RAG search
+        results = rag_matcher.find_matches(preferences, top_k=top_k)
 
-        # --- Step 3: RAG enrichment — look up each university in ChromaDB ---
-        rag_lookup = {}
-        if rag_matcher:
-            try:
-                all_docs = rag_matcher.vector_store.get_all_documents()
-                for i, meta in enumerate(all_docs['metadatas']):
-                    name = (meta.get('university') or '').strip().lower()
-                    if name:
-                        rag_lookup[name] = meta
-                print(f"RAG enrichment: {len(rag_lookup)} universities available")
-            except Exception as e:
-                print(f"RAG enrichment lookup failed (non-critical): {e}")
-
-        # --- Step 4: Merge ML results + RAG enrichment ---
+        # Format results for frontend
         universities = []
-        for u in ml_result.get('universities', []):
-            uni_name = u['university_name']
-            rag = rag_lookup.get(uni_name.strip().lower(), {})
-
-            tuition = u.get('tuition_fee', 0)
-            tuition_str = f"${tuition:,.0f}/year" if tuition else 'Contact school'
-
+        for r in results:
+            tuition = r.get('tuition_fees', 0)
             universities.append({
-                # ML prediction data
-                'name': uni_name,
-                'country': u['country'],
-                'match_score': u['admission_probability'],
-                'category': u['category'],
-                'qs_ranking': u.get('qs_ranking'),
-                'min_gpa': u.get('min_gpa', 0),
-                'ielts_requirement': u.get('ielts_requirement', 0),
-                'tuition_fee': tuition,
-                'tuition': tuition_str,
-                'acceptance_rate': u.get('acceptance_rate'),
-                'scholarship_available': u.get('scholarship_available', False),
-                'subject_match': u.get('subject_match', False),
-                'gap_analysis': u.get('gap_analysis', []),
-                'is_preferred': u.get('is_preferred', 0),
-                # RAG enrichment data (detailed info from ChromaDB)
-                'field': rag.get('field', field),
-                'degree': rag.get('degree', data.get('degree', 'Master')),
-                'ielts': rag.get('ielts', 0),
-                'toefl': rag.get('toefl', 0),
-                'scholarships': rag.get('scholarships', ''),
-                'deadline_fall': rag.get('deadline_fall', ''),
-                'deadline_spring': rag.get('deadline_spring', ''),
-                'test_requirements': rag.get('test_requirements', ''),
-                'program_duration': rag.get('program_duration', ''),
-                'english_requirements': rag.get('english_requirements', ''),
-                'living_cost': rag.get('living_cost', 0),
-                'total_cost_estimated': rag.get('total_cost_estimated', 0),
-                'max_coverage_percent': rag.get('max_coverage_percent', 0),
-                'work_visa_available': rag.get('work_visa_available', 0),
-                'research_weight': rag.get('research_weight', 0),
-                'eca_weight': rag.get('eca_weight', 0),
-                'research_focus': rag.get('research_focus', ''),
-                'programs_offered': rag.get('programs_offered', ''),
-                'rag_enriched': bool(rag),  # Flag: did RAG find this university?
+                'name': r['university'],
+                'country': r['country'],
+                'match_score': r['match_percentage'],
+                'field': r.get('field', field),
+                'degree': r.get('degree', ''),
+                'tuition': f"${tuition:,.0f}/year" if tuition else 'Contact school',
+                'tuition_fees': tuition,
+                'gpa_required': r.get('gpa_requirement', 0),
+                'ielts': r.get('ielts', 0),
+                'toefl': r.get('toefl', 0),
+                'scholarships': r.get('scholarships', ''),
+                'deadline_fall': r.get('deadline_fall', ''),
+                'deadline_spring': r.get('deadline_spring', ''),
+                'test_requirements': r.get('test_requirements', ''),
+                'program_duration': r.get('program_duration', ''),
+                'english_requirements': r.get('english_requirements', ''),
+                'qs_ranking': r.get('qs_ranking', ''),
+                'acceptance_rate': r.get('acceptance_rate', 0),
+                'fit_label': r.get('fit_label', ''),
+                'requirement_checks': r.get('requirement_checks', []),
+                'living_cost': r.get('living_cost', 0),
+                'total_cost_estimated': r.get('total_cost_estimated', 0),
+                'max_coverage_percent': r.get('max_coverage_percent', 0),
+                'work_visa_available': r.get('work_visa_available', 0),
+                'research_weight': r.get('research_weight', 0),
+                'eca_weight': r.get('eca_weight', 0),
+                'research_focus': r.get('research_focus', ''),
+                'programs_offered': r.get('programs_offered', ''),
+                'score_breakdown': r.get('score_breakdown', {}),
+                'reasons': r.get('reasons', []),
             })
 
-        # Split: display top_k, chat gets all 30
-        display_universities = universities[:top_k]
-
-        # Build rich chat context with ML summary + student profile
-        chat_context = {
-            'student_profile': student_profile,
-            'ml_summary': {
-                'overall_probability': ml_result.get('ml_prediction', {}).get('ml_probability', 0),
-                'confidence': ml_result.get('ml_prediction', {}).get('confidence', ''),
-                'recommendation': ml_result.get('recommendation', ''),
-                'category_counts': ml_result.get('category_counts', {}),
-                'improvements': ml_result.get('improvements', []),
-                'total_universities': ml_result.get('total_in_dataset', 0),
-            },
-            'shown_universities': display_universities,      # Top 5 on screen
-            'extra_universities': universities[top_k:],       # 6-30 for chat to recommend
-        }
-
         return jsonify({
-            'universities': display_universities,
-            'ml_prediction': ml_result.get('ml_prediction', {}),
-            'recommendation': ml_result.get('recommendation', ''),
-            'category_counts': ml_result.get('category_counts', {}),
-            'improvements': ml_result.get('improvements', []),
-            'total_in_database': ml_result.get('total_in_dataset', 0),
-            'chat_context': chat_context,
-            'source': 'ml+rag',
+            'universities': universities,
+            'total_in_database': rag_matcher.vector_store.get_count(),
+            'source': 'rag',
         })
 
     except Exception as e:
