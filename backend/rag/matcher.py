@@ -82,13 +82,14 @@ class UniversityMatcher:
     WORK_VISA_WEIGHT = 0.04  # 4% - Work visa availability for international students
     RESEARCH_WEIGHT = 0.05   # 5% - Research fit for the student
 
-    def __init__(self, embedder: Embedder = None, vector_store: VectorStore = None):
+    def __init__(self, embedder: Embedder = None, vector_store: VectorStore = None, ollama_chat=None):
         """
         Initialize matcher with embedder, vector store, BM25, and reranker.
 
         Args:
             embedder: Embedder instance (creates one if not provided)
             vector_store: VectorStore instance (creates one if not provided)
+            ollama_chat: OllamaChat instance for LLM-based weight extraction (optional)
         """
         print("Initializing University Matcher...")
 
@@ -104,6 +105,9 @@ class UniversityMatcher:
 
         # Initialize cross-encoder re-ranker
         self.reranker = Reranker()
+
+        # Ollama for LLM-based weight extraction (replaces keyword matching)
+        self.ollama_chat = ollama_chat
 
         print("Matcher ready!")
 
@@ -195,7 +199,51 @@ class UniversityMatcher:
 
         # --- Step 5: Detect user priorities from free text → dynamic weights ---
         dynamic_weights = self._detect_user_priorities(preferences)
+
+        # --- Step 5b: If QS ranking is heavily weighted, inject top-ranked candidates ---
+        if dynamic_weights.get('qs_ranking', 0) >= 0.15:
+            try:
+                existing_ids = {c['id'] for c in reranked}
+                all_docs = self.vector_store.get_all_documents()
+                top_qs = []
+                user_field = preferences.get('field', '').lower()
+                user_country = preferences.get('country', '').lower() if preferences.get('country') else ''
+                for idx, meta in enumerate(all_docs['metadatas']):
+                    qs = meta.get('qs_ranking', 999)
+                    try:
+                        qs = int(qs) if qs else 999
+                    except (ValueError, TypeError):
+                        qs = 999
+                    doc_id = all_docs['ids'][idx]
+                    if doc_id in existing_ids:
+                        continue
+                    # Field filter
+                    uni_field = (meta.get('field', '') or '').lower()
+                    if user_field and user_field not in uni_field and uni_field not in user_field:
+                        continue
+                    # Country filter
+                    if user_country and user_country not in (meta.get('country', '') or '').lower():
+                        continue
+                    if qs <= 200:
+                        top_qs.append((qs, idx, doc_id))
+                top_qs.sort(key=lambda x: x[0])
+                injected = 0
+                for qs, idx, doc_id in top_qs[:20]:
+                    reranked.append({
+                        'id': doc_id,
+                        'metadata': all_docs['metadatas'][idx],
+                        'document': all_docs['documents'][idx],
+                        'distance': 0.5,
+                        'similarity': 0.6,
+                        'rerank_score': 0.5,
+                    })
+                    injected += 1
+                if injected:
+                    print(f"Injected {injected} top-QS candidates (user prioritizes ranking)")
+            except Exception as e:
+                print(f"QS injection failed (non-critical): {e}")
         print(f"Dynamic weights: {dynamic_weights}")
+        print(f"  QS priority mode: {dynamic_weights.get('qs_ranking', 0) >= 0.15}")
 
         # --- Step 6: Criteria scoring + final score ---
         scored_results = []
@@ -226,18 +274,31 @@ class UniversityMatcher:
                     final_score *= 0.6   # 40% penalty for only loosely related field
 
             # Apply hard penalty for over-budget universities (tuition only)
+            # Softer penalty when user also prioritizes QS ranking
             user_budget = preferences.get('budget', 0)
             tuition = metadata.get('tuition_fees', 0)
+            qs_priority = dynamic_weights.get('qs_ranking', 0) >= 0.15
             if user_budget and tuition and tuition > user_budget:
                 over_ratio = tuition / user_budget
-                if over_ratio > 2.0:
-                    final_score *= 0.3  # 70% penalty if more than 2x over budget
-                elif over_ratio > 1.5:
-                    final_score *= 0.5  # 50% penalty if more than 1.5x over
-                elif over_ratio > 1.2:
-                    final_score *= 0.7  # 30% penalty if more than 20% over
+                if qs_priority:
+                    # Softer penalties — user values ranking, allow some budget flex
+                    if over_ratio > 2.0:
+                        final_score *= 0.5
+                    elif over_ratio > 1.5:
+                        final_score *= 0.7
+                    elif over_ratio > 1.2:
+                        final_score *= 0.85
+                    else:
+                        final_score *= 0.95
                 else:
-                    final_score *= 0.85  # 15% penalty if slightly over
+                    if over_ratio > 2.0:
+                        final_score *= 0.3
+                    elif over_ratio > 1.5:
+                        final_score *= 0.5
+                    elif over_ratio > 1.2:
+                        final_score *= 0.7
+                    else:
+                        final_score *= 0.85
 
             # Convert to percentage (0-100)
             match_percentage = round(final_score * 100, 1)
@@ -368,8 +429,8 @@ class UniversityMatcher:
     def _detect_user_priorities(self, preferences: Dict) -> Dict[str, float]:
         """Detect what the user cares about from free_text and return adjusted weights.
 
-        Uses fuzzy matching so typos like 'bdget', 'scholership', 'affortable'
-        still trigger the right priority adjustments.
+        Uses Ollama LLM (Mistral) to understand natural language intent.
+        Falls back to keyword matching if Ollama is unavailable.
         """
         free_text = (preferences.get('free_text') or '').lower()
 
@@ -389,18 +450,29 @@ class UniversityMatcher:
         if not free_text:
             return weights
 
+        # --- Try LLM-based extraction first (Ollama/Mistral) ---
+        if self.ollama_chat:
+            try:
+                available, _ = self.ollama_chat.is_available()
+                if available:
+                    llm_weights = self.ollama_chat.extract_weights(free_text, weights)
+                    if llm_weights and llm_weights != weights:
+                        print(f"  LLM weights: {llm_weights}")
+                        return llm_weights
+            except Exception as e:
+                print(f"  LLM weight extraction failed, using keyword fallback: {e}")
+
+        # --- Fallback: keyword matching ---
+        return self._keyword_weight_fallback(free_text, weights)
+
+    def _keyword_weight_fallback(self, free_text: str, weights: dict) -> dict:
+        """Keyword-based weight detection — used when Ollama is unavailable."""
         fm = self._fuzzy_word_match
 
-        # --- Budget priority ---
         cheap_kw = ['affordable', 'cheap', 'budget', 'inexpensive', 'economical',
-                     'low cost', 'low tuition', 'low budget', 'cost effective',
-                     'budget friendly', 'not expensive', 'save money', 'less expensive']
-        expensive_kw = ['expensive', 'premium', 'luxury',
-                        "money doesn't matter", 'money doesnt matter',
-                        "budget doesn't matter", 'budget doesnt matter',
-                        "cost doesn't matter", 'cost doesnt matter',
-                        'any budget', 'no budget limit', 'price not important',
-                        'cost not important', 'regardless of cost']
+                     'low cost', 'low tuition', 'budget friendly', 'save money']
+        expensive_kw = ['expensive', 'premium', "money doesn't matter",
+                        "budget doesn't matter", "cost doesn't matter"]
 
         if fm(free_text, cheap_kw):
             weights['budget'] = 0.22
@@ -409,57 +481,34 @@ class UniversityMatcher:
             weights['budget'] = 0.02
             weights['qs_ranking'] = 0.18
 
-        # --- QS Ranking priority ---
-        ranking_kw = ['prestigious', 'elite', 'renowned', 'famous', 'reputed',
-                      'top ranked', 'top ranking', 'best ranked', 'high ranking',
-                      'highly ranked', 'world class', 'world renowned',
-                      'top university', 'top universities',
-                      'best university', 'best universities',
-                      'ranking matters', 'qs ranking', 'ranking important',
-                      'good ranking', 'well ranked',
-                      'rank', 'ranking', 'ranked', 'varsity rank',
-                      'university rank', 'uni rank', 'higher rank',
-                      'rank matters', 'better rank', 'good rank']
+        ranking_kw = ['prestigious', 'elite', 'top ranked', 'best ranked',
+                      'highly ranked', 'world class', 'top university',
+                      'ranking', 'ranked', 'rank matters', 'good rank']
         if fm(free_text, ranking_kw):
             weights['qs_ranking'] = 0.25
             weights['budget'] = 0.06
-            weights['acceptance'] = 0.02
 
-        # --- Scholarship priority ---
         scholarship_kw = ['scholarship', 'funding', 'funded', 'stipend',
-                          'assistantship', 'fellowship', 'grant',
-                          'financial aid', 'financial support',
-                          'tuition waiver', 'free tuition', 'tuition free',
-                          'need based', 'merit based']
+                          'financial aid', 'tuition waiver', 'free tuition']
         if fm(free_text, scholarship_kw):
             weights['scholarship'] = 0.15
 
-        # --- Research priority ---
-        research_kw = ['research', 'lab', 'laboratory', 'publication', 'publish',
-                       'thesis', 'dissertation', 'phd prep', 'academic',
-                       'research focused', 'research opportunity', 'research output',
-                       'professor', 'faculty', 'innovation']
+        research_kw = ['research', 'lab', 'publication', 'thesis',
+                       'research focused', 'professor', 'faculty']
         if fm(free_text, research_kw):
             weights['research'] = 0.14
 
-        # --- Acceptance / easy admission priority ---
-        acceptance_kw = ['easy', 'safe', 'guaranteed', 'acceptance',
-                         'easy to get in', 'high acceptance', 'safe choice',
-                         'safe option', 'easy admission', 'less competitive',
-                         'not competitive', 'good chance', 'sure admit',
-                         'backup', 'safety school']
+        acceptance_kw = ['easy', 'safe', 'guaranteed', 'easy to get in',
+                         'high acceptance', 'safe choice', 'backup']
         if fm(free_text, acceptance_kw):
             weights['acceptance'] = 0.16
 
-        # --- Work visa priority ---
-        visa_kw = ['visa', 'immigration', 'immigrate', 'settle', 'relocate',
-                   'work visa', 'work after', 'stay after', 'post study work',
-                   'work permit', 'permanent resident', 'residency',
-                   'work abroad', 'job after', 'employment after']
+        visa_kw = ['visa', 'work visa', 'work after', 'stay after',
+                   'work permit', 'immigration', 'settle']
         if fm(free_text, visa_kw):
             weights['work_visa'] = 0.14
 
-        # Normalize weights to sum to CRITERIA_WEIGHT
+        # Normalize
         total = sum(weights.values())
         if total > 0:
             scale = self.CRITERIA_WEIGHT / total
@@ -719,17 +768,21 @@ class UniversityMatcher:
         if qs_ranking <= 10:
             scores['qs_ranking'] = 1.0
         elif qs_ranking <= 25:
-            scores['qs_ranking'] = 0.9
+            scores['qs_ranking'] = 0.92
         elif qs_ranking <= 50:
-            scores['qs_ranking'] = 0.8
+            scores['qs_ranking'] = 0.85
         elif qs_ranking <= 100:
-            scores['qs_ranking'] = 0.65
+            scores['qs_ranking'] = 0.75
         elif qs_ranking <= 150:
-            scores['qs_ranking'] = 0.5
+            scores['qs_ranking'] = 0.6
         elif qs_ranking <= 200:
-            scores['qs_ranking'] = 0.35
+            scores['qs_ranking'] = 0.45
+        elif qs_ranking <= 300:
+            scores['qs_ranking'] = 0.25
+        elif qs_ranking <= 400:
+            scores['qs_ranking'] = 0.15
         else:
-            scores['qs_ranking'] = 0.2
+            scores['qs_ranking'] = 0.05
 
         # ACCEPTANCE RATE — display only, neutral score
         # Low acceptance = prestigious but harder. High acceptance = easier but less selective.

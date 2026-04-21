@@ -30,13 +30,14 @@ YOUR CAPABILITIES:
 RULES:
 - You ONLY answer questions about: universities, study abroad, admissions, tuition, scholarships, GPA requirements, English tests (TOEFL/IELTS), application deadlines, student visas, career prospects, and student life abroad.
 - If a user asks about anything unrelated, politely redirect: "I'm a university advisor — I can help with study abroad topics! Ask me about universities, admissions, scholarships, or how to improve your profile."
-- Give DETAILED, data-driven answers. Use specific numbers (tuition, GPA, QS ranking, acceptance rate, admission probability).
-- When comparing universities, create structured comparisons with pros/cons.
-- When asked "which should I choose", consider: admission chance, cost, ranking, scholarships, work visa, research fit, and the student's profile.
-- When asked about universities NOT in the shown results, check your extra universities list and recommend from there with full details.
-- Proactively suggest alternatives and explain WHY — "University X has 75% admission chance for you because your GPA exceeds their 3.2 requirement and your IELTS is strong."
+- CRITICAL: You must ONLY recommend universities from the SEARCH RESULTS provided below. NEVER make up or hallucinate university data. If no search results are provided, say "Let me search for that" and ask the user to try the Find For Me feature.
+- Give DETAILED, data-driven answers. Use specific numbers (tuition, GPA, QS ranking, acceptance rate) ONLY from the provided data.
+- When comparing universities, create structured comparisons with pros/cons using ONLY the provided data.
+- When asked "which should I choose", consider: cost, ranking, scholarships, work visa, research fit from the provided data.
+- Proactively suggest alternatives from the provided search results and explain WHY.
 - When asked "how to improve", reference the improvement suggestions and explain specific steps.
 - Be encouraging, specific, and thorough. Students are making life-changing decisions — give them the detail they need.
+- Our database contains universities from: USA, UK, Canada, Australia, Germany and other countries. Only mention universities that appear in the search results.
 """
 
 
@@ -240,12 +241,15 @@ Return ONLY a JSON object with these fields (use null for anything not mentioned
 
 Set "is_search" to true ONLY if the user is asking for university suggestions/recommendations.
 Set it to false if they're asking general questions (what is IELTS, how to apply, etc.)
+If the user doesn't mention a specific field, set "field" to "engineering" as a default.
 
 Examples:
 "suggest me affordable CS universities in Canada" → {"field": "Computer Science", "degree": "Master", "country": "Canada", "budget": null, "free_text": "affordable computer science", "is_search": true}
 "compter sience in caneda under 30k" → {"field": "Computer Science", "degree": "Master", "country": "Canada", "budget": 30000, "free_text": "affordable computer science", "is_search": true}
 "what is IELTS?" → {"is_search": false}
 "best MBA programs" → {"field": "MBA", "degree": "Master", "country": null, "budget": null, "free_text": "best MBA programs", "is_search": true}
+"give me 10 cheaper university" → {"field": "engineering", "degree": "Master", "country": null, "budget": null, "free_text": "cheap affordable university good ranking", "is_search": true}
+"top ranked affordable universities" → {"field": "engineering", "degree": "Master", "country": null, "budget": null, "free_text": "top ranked affordable", "is_search": true}
 
 Return ONLY the JSON, nothing else."""
 
@@ -286,6 +290,119 @@ Return ONLY the JSON, nothing else."""
         except Exception as e:
             print(f"Preference extraction failed: {e}")
             return None
+
+    def extract_weights(self, free_text, default_weights):
+        """Use Mistral to understand user intent and return adjusted search weights.
+
+        Instead of keyword matching ('cheap', 'prestigious', etc.), the LLM
+        understands natural language like 'I want a good university that won't
+        break the bank' → boost budget weight, moderate ranking weight.
+
+        Args:
+            free_text: The user's free-text input from Find For Me
+            default_weights: Dict of current default weights
+
+        Returns:
+            Dict of adjusted weights, or default_weights if LLM fails
+        """
+        if not free_text or not free_text.strip():
+            return default_weights
+
+        weight_prompt = f"""You are a university search weight optimizer. A student typed preferences for finding universities.
+Analyze their intent and return adjusted search weights as JSON.
+
+DEFAULT WEIGHTS (these are the baseline — only change what the student's text implies):
+{json.dumps(default_weights, indent=2)}
+
+RULES:
+- Weights must sum to approximately {sum(default_weights.values()):.2f}
+- If student wants affordable/cheap → increase "budget", decrease "qs_ranking"
+- If student wants prestigious/top-ranked → increase "qs_ranking", decrease "budget"
+- If student wants scholarships/funding → increase "scholarship"
+- If student wants research/academic → increase "research"
+- If student wants easy admission/safe choice → increase "acceptance"
+- If student wants work visa/stay after → increase "work_visa"
+- If the text is vague or general, return the defaults unchanged
+- Only adjust weights that are clearly implied by the text
+
+Return ONLY a JSON object with the same keys as the default weights. Nothing else.
+
+Student's text: "{free_text}"
+"""
+
+        try:
+            resp = requests.post(
+                self.chat_url,
+                json={
+                    "model": self.model,
+                    "messages": [
+                        {"role": "system", "content": weight_prompt},
+                        {"role": "user", "content": free_text}
+                    ],
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.1,
+                        "num_predict": 300,
+                    }
+                },
+                timeout=15
+            )
+
+            if resp.status_code == 200:
+                text = resp.json().get("message", {}).get("content", "").strip()
+                json_match = re.search(r'\{[^{}]+\}', text, re.DOTALL)
+                if json_match:
+                    parsed = json.loads(json_match.group())
+                    # Validate: must have same keys and reasonable values
+                    if all(k in parsed for k in default_weights):
+                        # Normalize to same total
+                        total = sum(float(v) for v in parsed.values())
+                        target = sum(default_weights.values())
+                        if total > 0:
+                            scale = target / total
+                            return {k: round(float(v) * scale, 4) for k, v in parsed.items()}
+            return default_weights
+        except Exception as e:
+            print(f"LLM weight extraction failed (using defaults): {e}")
+            return default_weights
+
+    def search_university_info(self, university_name, university_df):
+        """Search for a specific university in the dataset and return its info.
+
+        Called by the chatbot when a user asks about a specific university.
+
+        Args:
+            university_name: Name or partial name of the university
+            university_df: Pandas DataFrame of all universities
+
+        Returns:
+            List of matching university dicts, or empty list
+        """
+        if university_df is None or university_df.empty:
+            return []
+
+        name_lower = university_name.lower().strip()
+        matches = []
+
+        for _, row in university_df.iterrows():
+            uni_name = str(row.get('university_name', '')).lower()
+            if name_lower in uni_name or uni_name in name_lower:
+                matches.append({
+                    'name': row.get('university_name', ''),
+                    'country': row.get('country', ''),
+                    'qs_ranking': row.get('qs_ranking', ''),
+                    'tuition': f"${row['tuition_fee']:,.0f}/year" if row.get('tuition_fee') else 'N/A',
+                    'min_gpa': row.get('min_gpa', ''),
+                    'ielts': row.get('Ielts_requirement', ''),
+                    'acceptance_rate': row.get('acceptance_rate', ''),
+                    'scholarship_available': bool(row.get('scholarship_available', False)),
+                    'total_cost': f"${row['total_cost_estimated']:,.0f}/year" if row.get('total_cost_estimated') else 'N/A',
+                    'programs_offered': row.get('programs_offered', ''),
+                    'research_focus': row.get('research_focus', ''),
+                    'work_visa_available': bool(row.get('work_visa_available', False)),
+                })
+
+        return matches[:5]
 
     def _format_rag_context(self, rag_context):
         """Format ML+RAG search results into rich text the LLM can understand.

@@ -13,33 +13,13 @@ import json
 # RAG imports for "Find For Me" feature
 from rag.matcher import UniversityMatcher
 
-# ML import for admission prediction
-from ml.predictor import AdmissionPredictor
-
 # Ollama import for local LLM chatbot
 from ollama_handler import OllamaChat
 
-# Initialize RAG matcher globally (loads model once at startup)
-print("Loading RAG matcher... (this may take a moment on first run)")
-rag_matcher = None
-try:
-    rag_matcher = UniversityMatcher()
-    print("RAG matcher loaded successfully!")
-except Exception as e:
-    print(f"Warning: RAG matcher failed to load: {e}")
-    print("Find For Me feature will use Claude CLI fallback")
+import pandas as pd
+import os
 
-# Initialize ML admission predictor
-print("Loading ML admission predictor...")
-ml_predictor = None
-try:
-    ml_predictor = AdmissionPredictor()
-    print("ML predictor loaded successfully!")
-except Exception as e:
-    print(f"Warning: ML predictor failed to load: {e}")
-    print("Admission prediction feature will be unavailable")
-
-# Initialize Ollama chatbot (local LLM)
+# Initialize Ollama chatbot (local LLM) — loaded first so RAG matcher can use it
 print("Connecting to Ollama (local LLM)...")
 ollama_chat = OllamaChat(model="mistral:instruct")
 ollama_available, ollama_status = ollama_chat.is_available()
@@ -48,6 +28,26 @@ if ollama_available:
 else:
     print(f"Ollama: NOT AVAILABLE - {ollama_status}")
     print("Chat will show an error until Ollama is started.")
+
+# Initialize RAG matcher globally (loads model once at startup)
+# Pass ollama_chat so matcher can use LLM for weight extraction
+print("Loading RAG matcher... (this may take a moment on first run)")
+rag_matcher = None
+try:
+    rag_matcher = UniversityMatcher(ollama_chat=ollama_chat if ollama_available else None)
+    print("RAG matcher loaded successfully!")
+except Exception as e:
+    print(f"Warning: RAG matcher failed to load: {e}")
+    print("Find For Me feature will use Claude CLI fallback")
+
+# Load university dataset for chatbot name lookup
+university_df = None
+try:
+    csv_path = os.path.join(os.path.dirname(__file__), 'ml', 'university_dataset_multilabel.csv')
+    university_df = pd.read_csv(csv_path)
+    print(f"University dataset loaded: {len(university_df)} universities")
+except Exception as e:
+    print(f"Warning: University dataset failed to load: {e}")
 
 app = Flask(__name__)
 CORS(app)
@@ -229,6 +229,32 @@ def find_for_me():
         return jsonify({'error': str(e)})
 
 
+def _format_rag_results(results):
+    """Format RAG matcher results into context dicts for chatbot."""
+    context = []
+    for r in results:
+        context.append({
+            'name': r['university'],
+            'country': r['country'],
+            'match_score': r['match_percentage'],
+            'tuition': f"${r['tuition_fees']:,.0f}/year" if r['tuition_fees'] else 'N/A',
+            'field': r['field'],
+            'degree': r['degree'],
+            'gpa_required': r['gpa_requirement'],
+            'ielts': r.get('ielts', 0),
+            'toefl': r.get('toefl', 0),
+            'scholarships': r.get('scholarships', ''),
+            'qs_ranking': r.get('qs_ranking', ''),
+            'acceptance_rate': r.get('acceptance_rate', ''),
+            'living_cost': r.get('living_cost', 0),
+            'total_cost_estimated': r.get('total_cost_estimated', 0),
+            'research_focus': r.get('research_focus', ''),
+            'work_visa_available': r.get('work_visa_available', ''),
+            'reasons': r.get('reasons', []),
+        })
+    return context
+
+
 @app.route('/api/chat', methods=['POST'])
 def chat():
     """Chat with local Ollama LLM (Mistral 7B)
@@ -250,51 +276,77 @@ def chat():
         if not message:
             return jsonify({'response': 'Please provide a message'})
 
-        # AUTO RAG: If user has no search results but asks about universities,
-        # use Mistral to understand the message (handles typos, slang, etc.)
-        # then automatically run a RAG search with the extracted preferences
-        if not rag_context and rag_matcher:
+        # AUTO SEARCH: If user has no search results, try two approaches:
+        # 1. Direct university lookup — "tell me about MIT" → search dataset
+        # 2. RAG search — "find me cheap CS in Canada" → full RAG pipeline
+        if not rag_context:
             try:
-                # Step 1: Ask Mistral to extract structured preferences
-                # e.g., "compter sience in caneda" → {field: "Computer Science", country: "Canada"}
-                auto_prefs = ollama_chat.extract_preferences(message)
+                # Step 1: Try direct university lookup from ML dataset
+                if university_df is not None:
+                    uni_matches = ollama_chat.search_university_info(message, university_df)
+                    if uni_matches:
+                        rag_context = uni_matches
+                        print(f"Direct search: Found {len(uni_matches)} matching universities")
 
-                if auto_prefs and auto_prefs.get('field'):
-                    print(f"Auto RAG: Mistral extracted preferences: {auto_prefs}")
+                # Step 2: If no direct match, try RAG search via LLM preference extraction
+                if not rag_context and rag_matcher:
+                    auto_prefs = ollama_chat.extract_preferences(message)
 
-                    # Build RAG search preferences
-                    search_prefs = {
-                        'field': auto_prefs['field'],
-                        'degree': auto_prefs.get('degree', 'Master'),
-                        'budget': auto_prefs.get('budget', 0),
-                        'gpa': auto_prefs.get('gpa', 0),
-                        'free_text': auto_prefs.get('free_text', message),
-                    }
-                    if auto_prefs.get('country'):
-                        search_prefs['country'] = auto_prefs['country']
+                    if auto_prefs and auto_prefs.get('field'):
+                        print(f"Auto RAG: Mistral extracted preferences: {auto_prefs}")
 
-                    # Step 2: Run RAG search with clean preferences
-                    auto_results = rag_matcher.find_matches(search_prefs, top_k=5)
-                    if auto_results:
-                        rag_context = []
-                        for r in auto_results:
-                            rag_context.append({
-                                'name': r['university'],
-                                'country': r['country'],
-                                'match_score': r['match_percentage'],
-                                'tuition': f"${r['tuition_fees']:,.0f}/year" if r['tuition_fees'] else 'N/A',
-                                'field': r['field'],
-                                'degree': r['degree'],
-                                'gpa_required': r['gpa_requirement'],
-                                'ielts': r.get('ielts', 0),
-                                'toefl': r.get('toefl', 0),
-                                'scholarships': r.get('scholarships', ''),
-                                'qs_ranking': r.get('qs_ranking', ''),
-                                'reasons': r.get('reasons', []),
-                            })
-                        print(f"Auto RAG: Found {len(rag_context)} universities")
+                        search_prefs = {
+                            'field': auto_prefs['field'],
+                            'degree': auto_prefs.get('degree', 'Master'),
+                            'budget': auto_prefs.get('budget', 0),
+                            'gpa': auto_prefs.get('gpa', 0),
+                            'free_text': auto_prefs.get('free_text', message),
+                        }
+                        if auto_prefs.get('country'):
+                            search_prefs['country'] = auto_prefs['country']
+
+                        auto_results = rag_matcher.find_matches(search_prefs, top_k=10)
+                        if auto_results:
+                            rag_context = _format_rag_results(auto_results)
+                            print(f"Auto RAG: Found {len(rag_context)} universities")
+
+                # Step 3: Fallback — direct ChromaDB vector search with raw message
+                if not rag_context and rag_matcher and rag_matcher.vector_store:
+                    try:
+                        query_emb = rag_matcher.embedder.model.encode([message])[0]
+                        raw_results = rag_matcher.vector_store.search(query_emb, top_k=10)
+                        if raw_results:
+                            seen = set()
+                            rag_context = []
+                            for r in raw_results:
+                                m = r.get('metadata', {})
+                                uni_name = m.get('university', '')
+                                if uni_name in seen:
+                                    continue
+                                seen.add(uni_name)
+                                rag_context.append({
+                                    'name': uni_name,
+                                    'country': m.get('country', ''),
+                                    'match_score': round(r.get('score', 0) * 100, 1),
+                                    'tuition': f"${m['tuition_fees']:,.0f}/year" if m.get('tuition_fees') else 'N/A',
+                                    'field': m.get('field', ''),
+                                    'degree': m.get('degree', ''),
+                                    'gpa_required': m.get('gpa_requirement', ''),
+                                    'ielts': m.get('ielts', 0),
+                                    'toefl': m.get('toefl', 0),
+                                    'scholarships': m.get('scholarships', ''),
+                                    'qs_ranking': m.get('qs_ranking', ''),
+                                    'acceptance_rate': m.get('acceptance_rate', ''),
+                                    'living_cost': m.get('living_cost', 0),
+                                    'total_cost_estimated': m.get('total_cost_estimated', 0),
+                                    'research_focus': m.get('research_focus', ''),
+                                    'work_visa_available': m.get('work_visa_available', ''),
+                                })
+                            print(f"Direct ChromaDB search: Found {len(rag_context)} universities")
+                    except Exception as e2:
+                        print(f"Direct ChromaDB search failed: {e2}")
             except Exception as e:
-                print(f"Auto RAG failed (non-critical): {e}")
+                print(f"Auto search failed (non-critical): {e}")
 
         # Call local Ollama LLM
         result = ollama_chat.chat(
@@ -324,35 +376,43 @@ def chat_stream():
     if not message:
         return jsonify({'response': 'Please provide a message'})
 
-    # Auto RAG for chat without context (same as non-streaming)
-    if not rag_context and rag_matcher:
+    # Auto search for chat without context (same logic as non-streaming)
+    if not rag_context:
         try:
-            auto_prefs = ollama_chat.extract_preferences(message)
-            if auto_prefs and auto_prefs.get('field'):
-                search_prefs = {
-                    'field': auto_prefs['field'],
-                    'degree': auto_prefs.get('degree', 'Master'),
-                    'budget': auto_prefs.get('budget', 0),
-                    'gpa': auto_prefs.get('gpa', 0),
-                    'free_text': auto_prefs.get('free_text', message),
-                }
-                if auto_prefs.get('country'):
-                    search_prefs['country'] = auto_prefs['country']
-                auto_results = rag_matcher.find_matches(search_prefs, top_k=5)
-                if auto_results:
-                    rag_context = [
-                        {'name': r['university'], 'country': r['country'],
-                         'match_score': r['match_percentage'],
-                         'tuition': f"${r['tuition_fees']:,.0f}/year" if r['tuition_fees'] else 'N/A',
-                         'field': r['field'], 'degree': r['degree'],
-                         'gpa_required': r['gpa_requirement'],
-                         'ielts': r.get('ielts', 0), 'toefl': r.get('toefl', 0),
-                         'scholarships': r.get('scholarships', ''),
-                         'qs_ranking': r.get('qs_ranking', '')}
-                        for r in auto_results
-                    ]
+            # Direct university lookup first
+            if university_df is not None:
+                uni_matches = ollama_chat.search_university_info(message, university_df)
+                if uni_matches:
+                    rag_context = uni_matches
+
+            # Then try RAG search
+            if not rag_context and rag_matcher:
+                auto_prefs = ollama_chat.extract_preferences(message)
+                if auto_prefs and auto_prefs.get('field'):
+                    search_prefs = {
+                        'field': auto_prefs['field'],
+                        'degree': auto_prefs.get('degree', 'Master'),
+                        'budget': auto_prefs.get('budget', 0),
+                        'gpa': auto_prefs.get('gpa', 0),
+                        'free_text': auto_prefs.get('free_text', message),
+                    }
+                    if auto_prefs.get('country'):
+                        search_prefs['country'] = auto_prefs['country']
+                    auto_results = rag_matcher.find_matches(search_prefs, top_k=5)
+                    if auto_results:
+                        rag_context = [
+                            {'name': r['university'], 'country': r['country'],
+                             'match_score': r['match_percentage'],
+                             'tuition': f"${r['tuition_fees']:,.0f}/year" if r['tuition_fees'] else 'N/A',
+                             'field': r['field'], 'degree': r['degree'],
+                             'gpa_required': r['gpa_requirement'],
+                             'ielts': r.get('ielts', 0), 'toefl': r.get('toefl', 0),
+                             'scholarships': r.get('scholarships', ''),
+                             'qs_ranking': r.get('qs_ranking', '')}
+                            for r in auto_results
+                        ]
         except Exception as e:
-            print(f"Auto RAG failed: {e}")
+            print(f"Auto search failed: {e}")
 
     def generate():
         try:
@@ -410,53 +470,6 @@ def cost():
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/api/predict', methods=['POST'])
-def predict_admission():
-    """Predict admission probability using ML + smart_score matching.
-
-    Input: gpa, ielts, gre, sat, research_exp, eca_level, budget,
-           preferred_country, field
-    Output: ML probability, top matched universities with category/probability/gap analysis
-    """
-    try:
-        data = request.json
-
-        if ml_predictor is None:
-            return jsonify({'error': 'ML predictor not loaded'}), 503
-
-        student_profile = {
-            'gpa': data.get('gpa', 0),
-            'ielts': data.get('ielts', 0),
-            'gre': data.get('gre', 0),
-            'sat': data.get('sat', 0),
-            'research_exp': data.get('research_exp', 0),
-            'eca_level': data.get('eca_level', 0),
-            'budget': data.get('budget', 0),
-            'preferred_country': data.get('preferred_country', ''),
-            'field': data.get('field', ''),
-        }
-
-        top_k = int(data.get('top_k', 10))
-        result = ml_predictor.match_top_universities(student_profile, top_k=top_k)
-
-        return jsonify({**result, 'source': 'ml'})
-
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
-
-
-@app.route('/api/predict/features', methods=['GET'])
-def get_feature_importances():
-    """Return ML model feature importances for visualization"""
-    if ml_predictor is None:
-        return jsonify({'error': 'ML predictor not loaded'}), 503
-    return jsonify({
-        'features': ml_predictor.get_feature_importances()
-    })
-
-
 @app.route('/api/health', methods=['GET'])
 def health():
     """Health check endpoint"""
@@ -464,7 +477,7 @@ def health():
         'status': 'ok',
         'timestamp': datetime.now().isoformat(),
         'service': 'SmartStudy Abroad API',
-        'ml_predictor': 'loaded' if ml_predictor else 'unavailable'
+        'university_db': f'{len(university_df)} universities' if university_df is not None else 'unavailable'
     })
 
 
@@ -476,14 +489,11 @@ if __name__ == '__main__':
     print("  POST /api/search    - Search university data (Claude AI)")
     print("  POST /api/fetch_all - Fetch all data points")
     print("  POST /api/findme    - Find universities (RAG - FAST, LOCAL)")
-    print("  POST /api/predict   - Admission probability (ML - Random Forest)")
-    print("  GET  /api/predict/features - ML feature importances")
     print("  POST /api/chat      - Chat with Ollama (LOCAL LLM)")
     print("  GET  /api/programs  - Get stored programs")
     print("  GET  /api/health    - Health check")
     print("")
     print("RAG Status:", "ENABLED" if rag_matcher else "DISABLED")
-    print("ML  Status:", "ENABLED" if ml_predictor else "DISABLED")
     if rag_matcher:
         print(f"Universities in database: {rag_matcher.vector_store.get_count()}")
     print("Ollama Status:", "CONNECTED" if ollama_available else "NOT AVAILABLE")

@@ -9,25 +9,10 @@ interface Message {
   timestamp: Date;
 }
 
-interface RAGResult {
-  name: string;
-  country: string;
-  match_score: number;
-  tuition: string;
-  field: string;
-  degree: string;
-  gpa_required?: number;
-  ielts: number;
-  toefl: number;
-  scholarships: string;
-  qs_ranking: string;
-  reasons?: string[];
-  [key: string]: unknown;
-}
-
 interface AIChatProps {
   systemMessages: string[];
-  ragResults?: RAGResult[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ragResults?: any[];
 }
 
 export default function AIChat({ systemMessages, ragResults }: AIChatProps) {

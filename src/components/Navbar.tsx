@@ -3,8 +3,8 @@
 import { useState, useRef, useEffect } from 'react';
 
 interface NavbarProps {
-  currentTool: 'search' | 'findme' | 'predict';
-  onToolChange: (tool: 'search' | 'findme' | 'predict') => void;
+  currentTool: 'search' | 'findme';
+  onToolChange: (tool: 'search' | 'findme') => void;
 }
 
 export default function Navbar({ currentTool, onToolChange }: NavbarProps) {
@@ -33,7 +33,6 @@ export default function Navbar({ currentTool, onToolChange }: NavbarProps) {
   const tools = [
     { id: 'search' as const, name: 'Search University', icon: '🔍', desc: 'Search by name' },
     { id: 'findme' as const, name: 'Find For Me', icon: '🎯', desc: 'AI recommendations' },
-    { id: 'predict' as const, name: 'Predict Admission', icon: '📊', desc: 'ML admission chances' },
   ];
 
   return (
