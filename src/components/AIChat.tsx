@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
+import { useAuth } from '@/lib/auth';
 
 interface Message {
   id: string;
@@ -16,11 +17,31 @@ interface AIChatProps {
 }
 
 export default function AIChat({ systemMessages, ragResults }: AIChatProps) {
+  const { user, data: userData, appendChatMessages, clearChatHistory } = useAuth();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const hydratedFor = useRef<string | null>(null);
+
+  // Hydrate from persisted history when user logs in
+  useEffect(() => {
+    if (!user) {
+      hydratedFor.current = null;
+      setMessages([]);
+      return;
+    }
+    if (hydratedFor.current === user.uid) return;
+    const persisted = userData.chatHistory || [];
+    setMessages(persisted.map(m => ({
+      id: m.id,
+      text: m.text,
+      sender: m.role === 'user' ? 'user' : 'ai',
+      timestamp: new Date(m.ts),
+    })));
+    hydratedFor.current = user.uid;
+  }, [user, userData.chatHistory]);
 
   // Add system messages from parent
   useEffect(() => {
@@ -77,17 +98,29 @@ export default function AIChat({ systemMessages, ragResults }: AIChatProps) {
           message: input,
           history,
           rag_context: ragResults && ragResults.length > 0 ? ragResults : null,
+          user_profile: user ? {
+            name: user.name,
+            ...userData.profile,
+            savedCount: userData.savedUniversities.length,
+          } : null,
         }),
       });
 
       const data = await response.json();
 
-      setMessages(prev => [...prev, {
+      const aiText = data.response || 'Sorry, I could not process that.';
+      const aiMsg: Message = {
         id: (Date.now() + 1).toString(),
-        text: data.response || 'Sorry, I could not process that.',
+        text: aiText,
         sender: 'ai',
         timestamp: new Date(),
-      }]);
+      };
+      setMessages(prev => [...prev, aiMsg]);
+      // Persist this turn (user + ai) to Firebase per-user history
+      appendChatMessages([
+        { id: userMessage.id, role: 'user', text: userMessage.text, ts: userMessage.timestamp.getTime() },
+        { id: aiMsg.id, role: 'ai', text: aiText, ts: aiMsg.timestamp.getTime() },
+      ]);
     } catch {
       setMessages(prev => [...prev, {
         id: (Date.now() + 1).toString(),
@@ -126,14 +159,24 @@ export default function AIChat({ systemMessages, ragResults }: AIChatProps) {
                   </div>
                 </div>
               </div>
-              <button
-                onClick={() => setIsExpanded(false)}
-                className="w-10 h-10 rounded-xl bg-white/20 hover:bg-white/30 flex items-center justify-center transition-colors"
-              >
-                <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
+              <div className="flex items-center gap-2">
+                {user && messages.length > 0 && (
+                  <button
+                    onClick={() => { if (confirm('Clear chat history?')) { clearChatHistory(); setMessages([]); } }}
+                    title="Clear chat history"
+                    className="px-3 h-10 rounded-xl bg-white/20 hover:bg-white/30 text-white text-xs font-medium transition-colors">
+                    Clear
+                  </button>
+                )}
+                <button
+                  onClick={() => setIsExpanded(false)}
+                  className="w-10 h-10 rounded-xl bg-white/20 hover:bg-white/30 flex items-center justify-center transition-colors"
+                >
+                  <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
             </div>
           </div>
 

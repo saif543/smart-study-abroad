@@ -1,6 +1,9 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { useAuth } from '@/lib/auth';
 
 interface NavbarProps {
   currentTool: 'search' | 'findme';
@@ -8,6 +11,19 @@ interface NavbarProps {
 }
 
 export default function Navbar({ currentTool, onToolChange }: NavbarProps) {
+  const { user, logout } = useAuth();
+  const router = useRouter();
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const userMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function onClick(e: MouseEvent) {
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) setUserMenuOpen(false);
+    }
+    document.addEventListener('mousedown', onClick);
+    return () => document.removeEventListener('mousedown', onClick);
+  }, []);
+
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -51,6 +67,7 @@ export default function Navbar({ currentTool, onToolChange }: NavbarProps) {
             </span>
           </div>
 
+          <div className="flex items-center gap-3">
           {/* Tools Dropdown */}
           <div className="relative" ref={dropdownRef}>
             <button
@@ -103,6 +120,43 @@ export default function Navbar({ currentTool, onToolChange }: NavbarProps) {
                 ))}
               </div>
             )}
+          </div>
+
+          {/* Auth area */}
+          {user ? (
+            <div className="relative" ref={userMenuRef}>
+              <button onClick={() => setUserMenuOpen(o => !o)}
+                className="w-10 h-10 rounded-full bg-gradient-to-br from-purple-500 to-pink-500 text-white font-medium shadow-lg flex items-center justify-center"
+                title={user.name}>
+                {user.name.charAt(0).toUpperCase()}
+              </button>
+              {userMenuOpen && (
+                <div className="absolute right-0 mt-3 w-56 rounded-2xl bg-white shadow-2xl border border-slate-100 py-2 scale-in">
+                  <div className="px-4 py-2 border-b border-slate-100">
+                    <p className="text-sm font-medium text-slate-800 truncate">{user.name}</p>
+                    <p className="text-xs text-slate-400 truncate">{user.email}</p>
+                  </div>
+                  <Link href="/dashboard" onClick={() => setUserMenuOpen(false)}
+                    className="block px-4 py-2 text-sm hover:bg-slate-50 text-slate-700">
+                    📊 Dashboard
+                  </Link>
+                  <button onClick={() => { logout(); setUserMenuOpen(false); router.push('/'); }}
+                    className="w-full text-left px-4 py-2 text-sm hover:bg-slate-50 text-slate-700">
+                    Log out
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <Link href="/login" className="px-4 py-2 text-sm font-medium text-slate-700 hover:text-slate-900">
+                Log in
+              </Link>
+              <Link href="/signup" className="px-4 py-2 text-sm font-medium rounded-full bg-gradient-to-r from-purple-500 to-pink-500 text-white hover:shadow-lg transition">
+                Sign up
+              </Link>
+            </div>
+          )}
           </div>
         </div>
       </div>

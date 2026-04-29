@@ -77,13 +77,14 @@ class OllamaChat:
         except Exception as e:
             return False, f"Error checking Ollama: {e}"
 
-    def chat(self, message, history=None, rag_context=None):
+    def chat(self, message, history=None, rag_context=None, user_profile=None):
         """Send a message to Ollama and get a response.
 
         Args:
             message: The user's current message text
             history: List of prior messages [{role: 'user'|'assistant', content: '...'}]
             rag_context: List of matched universities from RAG (dicts with name, country, etc.)
+            user_profile: Optional dict with student profile (cgpa, ielts, budget, etc.)
 
         Returns:
             dict with 'response' (text) and 'model' (model name)
@@ -91,8 +92,10 @@ class OllamaChat:
         if history is None:
             history = []
 
-        # Build the system prompt with optional RAG context
+        # Build the system prompt with optional RAG + profile context
         system_content = SYSTEM_PROMPT
+        if user_profile:
+            system_content += "\n\n" + self._format_user_profile(user_profile)
         if rag_context:
             system_content += "\n\n" + self._format_rag_context(rag_context)
 
@@ -403,6 +406,62 @@ Student's text: "{free_text}"
                 })
 
         return matches[:5]
+
+    def _format_user_profile(self, profile):
+        """Build a short student-context block to prepend to the system prompt."""
+        if not profile:
+            return ""
+        lines = ["[STUDENT PROFILE — answer based on THIS student, not generic advice]"]
+        name = profile.get("name")
+        if name:
+            lines.append(f"- Name: {name}")
+        mapping = [
+            ("cgpa", "CGPA (out of 4.0)"),
+            ("budgetUsd", "Annual budget (USD)"),
+            ("preferredCountry", "Preferred country"),
+            ("ieltsScore", "IELTS"),
+            ("toeflScore", "TOEFL"),
+            ("greScore", "GRE"),
+            ("researchInterest", "Research interest"),
+        ]
+        for key, label in mapping:
+            v = profile.get(key)
+            if v not in (None, ""):
+                lines.append(f"- {label}: {v}")
+
+        # Research experience + thesis
+        exp = profile.get("researchExperience")
+        exp_labels = {
+            "none": None,
+            "thesis": "Undergrad thesis",
+            "lab": "Lab / Research Assistant experience",
+            "industry": "Industry R&D experience",
+        }
+        if exp and exp in exp_labels and exp_labels[exp]:
+            lines.append(f"- Research experience: {exp_labels[exp]}")
+        thesis_count = int(profile.get("thesisCount") or 0)
+        pub_count = int(profile.get("publicationCount") or 0)
+        if thesis_count > 0:
+            lines.append(f"- Theses completed: {thesis_count}")
+        if pub_count > 0:
+            lines.append(f"- Published papers: {pub_count}")
+
+        saved = profile.get("savedCount")
+        if saved is not None:
+            lines.append(f"- Universities already shortlisted: {saved}")
+        lines.append(
+            "CRITICAL RULES — you MUST follow these in every response:\n"
+            "1. Reference the student's actual numbers (CGPA, IELTS, budget) in EVERY recommendation. "
+            "Never give generic advice that ignores their specific profile.\n"
+            "2. If their score is below a uni's minimum, say so explicitly: "
+            "'Your IELTS 6.5 is below MIT's 7.0 requirement — retake or pick a TOEFL school.'\n"
+            "3. When suggesting unis, name them and give a one-line REASON tied to their profile: "
+            "'CMU fits because their min CGPA 3.5 matches yours and their tuition is within your $40k budget.'\n"
+            "4. If the student mentions priorities (budget, ranking, scholarship, research), explicitly "
+            "call out how that priority shaped your suggestion.\n"
+            "5. Never recommend a uni without naming a specific reason from their profile or RAG context."
+        )
+        return "\n".join(lines)
 
     def _format_rag_context(self, rag_context):
         """Format ML+RAG search results into rich text the LLM can understand.

@@ -175,6 +175,16 @@ def find_for_me():
         if country and country != 'Any':
             preferences['country'] = country
 
+        # Student research strength (publications, thesis, lab experience)
+        # Boosts match score for research-heavy universities.
+        student_research = data.get('student_research') or {}
+        if student_research:
+            preferences['student_research'] = {
+                'experience': student_research.get('experience', 'none'),
+                'thesis_count': int(student_research.get('thesis_count', 0) or 0),
+                'publication_count': int(student_research.get('publication_count', 0) or 0),
+            }
+
         top_k = int(data.get('top_k', 5))
 
         # RAG search
@@ -272,6 +282,7 @@ def chat():
         message = data.get('message', '')
         history = data.get('history', [])
         rag_context = data.get('rag_context', None)
+        user_profile = data.get('user_profile', None)
 
         if not message:
             return jsonify({'response': 'Please provide a message'})
@@ -352,7 +363,8 @@ def chat():
         result = ollama_chat.chat(
             message=message,
             history=history,
-            rag_context=rag_context
+            rag_context=rag_context,
+            user_profile=user_profile,
         )
 
         return jsonify(result)

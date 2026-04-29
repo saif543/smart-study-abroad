@@ -53,3 +53,17 @@ venv/
 # IDE
 .idea/
 .vscode/
+
+# Project-specific
+.claude/
+backend/venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/rag/chroma_db/
+backend/rag/chroma_db_unified/
+backend/rag/chroma_db_unified_build/
+backend/rag/chroma_db_fresh/
+*.pyc
+image.png
+image copy.png
+zhanhui-li-1iuxWsIZ6ko-unsplash.jpg

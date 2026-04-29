@@ -50,7 +50,9 @@ def safe_str(val, default=''):
 
 
 # ----- Paths -----
-ML_CSV = os.path.join('ml', 'university_dataset_multilabel.csv')
+ML_CSV_V2 = os.path.join('ml', 'university_dataset_v2.csv')
+ML_CSV_LEGACY = os.path.join('ml', 'university_dataset_multilabel.csv')
+ML_CSV = ML_CSV_V2 if os.path.exists(ML_CSV_V2) else ML_CSV_LEGACY
 RAG_DB_PATH = os.path.join('rag', 'chroma_db_fresh')
 NEW_DB_PATH = os.path.join('rag', 'chroma_db_unified')
 
@@ -173,9 +175,15 @@ def find_rag_match(ml_name, rag_map):
 
 
 def build_unified_entries(ml_df, rag_map):
-    """Build unified entries: one per university × field combination."""
+    """Build unified entries: one per university × field combination.
+
+    Supports both v2 schema (single 'fields' column) and legacy 75-col one-hot CSV.
+    """
     entries = []
-    subject_cols = [c for c in ml_df.columns if c not in [
+    is_v2 = 'fields' in ml_df.columns
+
+    # Legacy one-hot column detection (only used if v2 'fields' column is absent)
+    legacy_subject_cols = [] if is_v2 else [c for c in ml_df.columns if c not in [
         'university_name', 'country', 'degree_level', 'programs_offered',
         'qs_ranking', 'min_gpa', 'min_gre', 'Ielts_requirement', 'tuition_fee',
         'acceptance_rate', 'research_focus', 'scholarship_available',
@@ -197,29 +205,32 @@ def build_unified_entries(ml_df, rag_map):
         else:
             unmatched_count += 1
 
-        # Get active subject fields for this university
+        # Active fields — v2 uses single 'fields' column, legacy uses one-hots
         active_fields = []
-        for sc in subject_cols:
-            try:
-                if safe_float(row[sc]) == 1:
-                    # Clean up field name
-                    field_name = sc.replace('_', ' ').replace('&', 'and').title()
-                    active_fields.append(field_name)
-            except (ValueError, TypeError):
-                pass
+        if is_v2:
+            fields_str = safe_str(row.get('fields', ''), '')
+            if fields_str:
+                active_fields = [f.strip().title() for f in fields_str.split(',') if f.strip()]
+        else:
+            for sc in legacy_subject_cols:
+                try:
+                    if safe_float(row[sc]) == 1:
+                        field_name = sc.replace('_', ' ').replace('&', 'and').title()
+                        active_fields.append(field_name)
+                except (ValueError, TypeError):
+                    pass
 
-        # If no subject columns active, use programs_offered text
+        # Fallback to programs_offered text
         if not active_fields:
             prog = str(row.get('programs_offered', ''))
             if prog and prog != 'nan':
                 active_fields = [f.strip().title() for f in prog.split(',')]
 
-        # Fallback
         if not active_fields:
             active_fields = ['General Studies']
 
-        # Build base metadata from ML
-        ielts = safe_float(row['Ielts_requirement'])
+        # Build base metadata from ML — support both v2 (ielts_min) and legacy (Ielts_requirement)
+        ielts = safe_float(row.get('ielts_min', row.get('Ielts_requirement', 0)))
         toefl_est = ielts_to_toefl(ielts)
         tuition = safe_float(row['tuition_fee'])
         living = safe_float(row['living_cost'], LIVING_COST_FALLBACK.get(country, 12000))
@@ -236,6 +247,17 @@ def build_unified_entries(ml_df, rag_map):
         programs_offered = safe_str(row['programs_offered'], ', '.join(active_fields).lower())
         degree_level = safe_str(row['degree_level'], 'Graduate')
         min_gre = safe_float(row.get('min_gre', 0))
+        # NEW: thesis / publication signals (v2 only — fall back to derived from research_w)
+        has_thesis = safe_bool(row.get('has_thesis_option', 1 if research_w >= 3 else 0))
+        accepts_pubs = safe_bool(row.get('accepts_publications', 1 if research_w >= 4 else 0))
+        research_expectation = safe_str(row.get('research_expectation', ''),
+            'publication-required' if research_w >= 5 else
+            'publication-preferred' if research_w >= 4 else
+            'thesis-recommended' if research_w >= 3 else
+            'coursework-only')
+        bd_admit_count = safe_float(row.get('bd_admit_count_3yr', 0))
+        city = safe_str(row.get('city', ''), '')
+        uni_type = safe_str(row.get('university_type', ''), '')
 
         # Scholarship text
         if scholarship:
@@ -262,8 +284,12 @@ def build_unified_entries(ml_df, rag_map):
         else:
             gre_text = "GRE Not Required"
 
-        # Default deadlines/duration
+        # Deadlines: prefer per-uni values from CSV, else country defaults
         country_deadlines = DEADLINE_DEFAULTS.get(country, {'fall': 'Contact university', 'spring': 'N/A'})
+        csv_fall = safe_str(row.get('deadline_fall', ''), '').strip()
+        csv_spring = safe_str(row.get('deadline_spring', ''), '').strip()
+        uni_fall = csv_fall if csv_fall else country_deadlines['fall']
+        uni_spring = csv_spring if csv_spring else country_deadlines['spring']
         default_duration = DURATION_DEFAULTS.get(degree_level, '2 years')
 
         # Create one entry per field
@@ -312,9 +338,17 @@ def build_unified_entries(ml_df, rag_map):
                 'eca_weight': eca_w,
                 'work_visa_available': 1 if visa else 0,
 
+                # NEW v2 fields
+                'has_thesis_option': 1 if has_thesis else 0,
+                'accepts_publications': 1 if accepts_pubs else 0,
+                'research_expectation': research_expectation,
+                'bd_admit_count_3yr': bd_admit_count,
+                'city': city,
+                'university_type': uni_type,
+
                 'program_duration': default_duration,
-                'deadline_fall': country_deadlines['fall'],
-                'deadline_spring': country_deadlines['spring'],
+                'deadline_fall': uni_fall,
+                'deadline_spring': uni_spring,
             }
 
             # Override with RAG data where RAG has better/specific info

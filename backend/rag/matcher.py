@@ -322,6 +322,8 @@ class UniversityMatcher:
                 # New unified fields from ML dataset
                 'acceptance_rate': metadata.get('acceptance_rate', 0),
                 'fit_label': self._get_student_fit_label(scores),
+                'admit_bucket': self._get_admit_bucket(preferences, metadata),
+                'admit_chance': self._compute_admit_chance(preferences, metadata),
                 'requirement_checks': self._build_requirement_checks(preferences, metadata, scores),
                 'living_cost': metadata.get('living_cost', 0),
                 'total_cost_estimated': metadata.get('total_cost_estimated', 0),
@@ -632,7 +634,16 @@ class UniversityMatcher:
             # No budget specified, no intent — neutral score
             scores['budget'] = 0.5
         elif cost_to_compare <= user_budget:
-            scores['budget'] = 1.0  # Affordable = full score
+            # Under budget — base score 1.0, but if user said "budget friendly",
+            # prefer cheaper unis (don't tie everyone at 1.0)
+            if budget_intent == 'cheap':
+                ratio = cost_to_compare / user_budget  # 0..1, smaller = cheaper
+                scores['budget'] = max(0.5, 1.0 - ratio * 0.5)  # 1.0 at $0, 0.5 at full budget
+            elif budget_intent == 'expensive':
+                ratio = cost_to_compare / user_budget
+                scores['budget'] = 0.5 + ratio * 0.5  # 0.5 at $0, 1.0 at full budget
+            else:
+                scores['budget'] = 1.0
         else:
             # Penalize for going over budget (gradual)
             over_percentage = (cost_to_compare - user_budget) / user_budget
@@ -816,6 +827,25 @@ class UniversityMatcher:
         else:
             scores['research'] = 0.4
 
+        # STUDENT RESEARCH STRENGTH BOOST
+        # If the student has publications / thesis / lab experience, boost match
+        # for research-heavy universities (research_weight >= 3). Top labs care
+        # a LOT about prior research output — this reflects admissions reality.
+        sr = preferences.get('student_research') or {}
+        if sr:
+            pub_count = int(sr.get('publication_count', 0) or 0)
+            thesis_count = int(sr.get('thesis_count', 0) or 0)
+            # Each publication contributes 0.6, each thesis 0.3 (capped)
+            strength = min(pub_count, 3) * 0.6 + min(thesis_count, 2) * 0.3
+            exp_bonus = {'thesis': 0.3, 'lab': 0.5, 'industry': 0.2}.get(sr.get('experience', 'none'), 0.0)
+            # Normalize to [0, 1]: 3 pubs (1.8) + 2 theses (0.6) + exp (0.5) = 2.9 max
+            strength_norm = min(1.0, (strength + exp_bonus) / 2.5)
+            # Apply boost only for research-leaning unis. Up to +0.5 to research subscore.
+            if research_weight >= 3 and strength_norm > 0:
+                boost = strength_norm * 0.5 * ((research_weight - 2) / 3.0)
+                scores['research'] = min(1.0, scores['research'] + boost)
+            scores['student_research_strength'] = round(strength_norm, 3)
+
         # Calculate weighted total criteria score using dynamic weights
         w = dynamic_weights if dynamic_weights else {
             'budget': self.BUDGET_WEIGHT, 'gpa': self.GPA_WEIGHT,
@@ -838,6 +868,52 @@ class UniversityMatcher:
         )
 
         return scores
+
+    @staticmethod
+    def _compute_admit_chance(preferences: dict, metadata: dict) -> float:
+        """Realistic admission chance % combining acceptance rate, GPA fit, English fit.
+
+        Returns 0..100. Heuristic — not a prediction, just a ranking signal.
+        """
+        try:
+            acc = float(metadata.get('acceptance_rate', 0) or 0)
+            if acc <= 0:
+                acc = 30.0  # neutral default when missing
+            base = min(100.0, max(1.0, acc))  # cap 1..100
+
+            # GPA factor: 1.0 when student meets, scales 0.4..1.2
+            user_gpa = float(preferences.get('gpa', 0) or 0)
+            min_gpa = float(metadata.get('gpa_requirement', 0) or 0)
+            gpa_factor = 1.0
+            if user_gpa > 0 and min_gpa > 0:
+                ratio = user_gpa / min_gpa
+                if ratio >= 1.10:   gpa_factor = 1.2
+                elif ratio >= 1.0:  gpa_factor = 1.0
+                elif ratio >= 0.90: gpa_factor = 0.7
+                else:               gpa_factor = 0.4
+
+            # English factor
+            user_ielts = float(preferences.get('ielts', 0) or 0)
+            min_ielts = float(metadata.get('ielts', 0) or 0)
+            ielts_factor = 1.0
+            if user_ielts > 0 and min_ielts > 0:
+                if user_ielts >= min_ielts + 0.5:  ielts_factor = 1.1
+                elif user_ielts >= min_ielts:      ielts_factor = 1.0
+                elif user_ielts >= min_ielts - 0.5: ielts_factor = 0.7
+                else:                              ielts_factor = 0.5
+
+            chance = base * gpa_factor * ielts_factor
+            return round(min(95.0, max(2.0, chance)), 1)
+        except Exception:
+            return 30.0
+
+    @classmethod
+    def _get_admit_bucket(cls, preferences: dict, metadata: dict) -> str:
+        """Bucket admission chance into Safe / Target / Reach for student-friendly UI."""
+        chance = cls._compute_admit_chance(preferences, metadata)
+        if chance >= 55:  return 'Safe'
+        if chance >= 25:  return 'Target'
+        return 'Reach'
 
     @staticmethod
     def _get_student_fit_label(scores: dict) -> str:
